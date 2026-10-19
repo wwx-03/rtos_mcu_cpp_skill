@@ -1,0 +1,18 @@
+menu "App"
+
+    config APP_SAMPLE_INTERVAL_MS
+        int "Sampling period (ms)"
+        range 100 60000
+        default 2000
+
+    config APP_TASK_STACK_MAIN_BYTES
+        int "Main task stack (bytes)"
+        range 2048 32768
+        default 4096
+
+    config APP_TASK_STACK_WORKER_BYTES
+        int "Worker task stack (bytes)"
+        range 2048 32768
+        default 6144
+
+endmenu
