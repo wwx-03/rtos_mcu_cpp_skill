@@ -32,12 +32,15 @@ MCU 厂商、SDK 版本、栈单位、ISR 规则等会随平台变化的内容�
 - `Application` 持有主事件队列，用 `MainEventLoop()` 统一派发**中断事件与跨模块事件**；
 - **每个 APP 类自己持有队列和任务**，对外只暴露异步 API；
 - 依赖在构造时由 `Board` 注入；
+- **先选定 Layered / DIP / Hybrid 架构模式**，并用构建系统强制依赖方向；
 - **`Application::Start()` 只创建任务，不启动调度器**；启动调度器是平台入口的职责。
 
 ## 平台契约（关键新增）
 
 生成代码前必须先填写 `references/platform-profile.md`，至少确认：
 
+- 架构模式（Layered / DIP / Hybrid）与选择理由；
+- app 可见的抽象层（bsp 还是 devices/services）以及构建系统如何强制；
 - 入口函数与调度器是否已启动；
 - `xTaskCreate` / `xTaskCreateStatic` 的栈单位（byte / word）；
 - 栈高水位返回值单位；
@@ -115,16 +118,19 @@ STM32F407 + FreeRTOS，把这个裸机工程改成 中断 → 队列 → 任务 
 
 推荐流程：
 
-1. AI 识别 MCU/RTOS/SDK，填写 `references/platform-profile.md`；
-2. AI 先实现 `templates/` 里的 `port/`；
-3. 再生成 `app / bsp / devices / utility`；
-4. 按 `checklists/bring-up.md` 做语义与构建检查。
+1. AI 识别 MCU/RTOS/SDK，并选择 Layered / DIP / Hybrid 架构模式；
+2. 填写 `references/platform-profile.md`（含架构模式与构建约束）；
+3. AI 先实现 `templates/` 里的 `port/`；
+4. 按选定模式生成 `app / bsp / devices / services / utility`；
+5. 按 `checklists/bring-up.md` 做语义与构建检查。
 
 ## 覆盖内容
 
 | 主题 | 位置 |
 | --- | --- |
+| Layered / DIP / Hybrid 架构模式选择 | `SKILL.md` §2 |
 | 分层、依赖方向、Board 注入 | `SKILL.md` |
+| 架构模式与构建约束记录 | `references/platform-profile.md` |
 | Application / MainEventLoop / 启动时序 | `SKILL.md` |
 | APP 异步 API、队列与载荷策略 | `SKILL.md` |
 | ISR → 任务链路、回调上下文 | `SKILL.md` + `references/callback-contexts.md` |
@@ -143,6 +149,8 @@ STM32F407 + FreeRTOS，把这个裸机工程改成 中断 → 队列 → 任务 
 
 改完工程后按 `checklists/bring-up.md` 逐条核对，关键几条：
 
+- [ ] 架构模式已选定并记录；构建系统已强制依赖方向
+- [ ] 临时 include 不允许的层会编译失败（分层约束真实生效）
 - [ ] 平台契约已填写，入口/调度器/栈单位/中断语义已确认
 - [ ] `Application::Start()` 没有启动调度器
 - [ ] 栈大小按平台单位设置，并通过高水位验证

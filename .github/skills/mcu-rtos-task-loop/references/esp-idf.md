@@ -39,6 +39,7 @@ project/
 │   ├── app/        # Application + APP 类
 │   ├── bsp/        # Board、驱动、WiFi/MQTT
 │   ├── devices/    # 器件抽象（不含 RTOS/IDF 头）
+│   ├── services/   # WiFi/MQTT/存储/时间等平台服务接口（DIP/Hybrid 可选）
 │   ├── utility/    # 纯逻辑
 │   └── port/       # 唯一平台依赖点
 ├── main/           # app_main、Kconfig.projbuild、idf_component.yml
@@ -46,15 +47,34 @@ project/
 └── sdkconfig.defaults
 ```
 
-### CMake 依赖
+### CMake 依赖（按架构模式）
+
+具体选哪种由 `SKILL.md` §2 的架构模式决定。
+
+Layered（app 用 bsp，devices 只在 bsp 内部可见）：
 
 ```cmake
 idf_component_register(
     SRCS "src/application.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES bsp devices utility freertos
+    REQUIRES bsp port
 )
+# bsp: REQUIRES port PRIV_REQUIRES devices
 ```
+
+DIP（app 只看到 devices/services，bsp 实现接口，main 做组合根）：
+
+```cmake
+idf_component_register(
+    SRCS "src/application.cpp"
+    INCLUDE_DIRS "include"
+    REQUIRES devices services port
+)
+# bsp:  REQUIRES devices services port
+# main: REQUIRES app bsp devices services port
+```
+
+验收：在 app 里 include 一个不允许的层，构建必须失败。
 
 IDF 6 中 `#include "FreeRTOS.h"` 不再默认可用，必须：
 

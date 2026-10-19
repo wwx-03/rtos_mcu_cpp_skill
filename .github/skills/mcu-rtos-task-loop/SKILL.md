@@ -1,6 +1,6 @@
 ---
 name: mcu-rtos-task-loop
-description: '编写或改造 RTOS MCU 工程（FreeRTOS / CMSIS-RTOS2 / ESP-IDF / STM32 / ESP32 / 嵌入式 C++）时使用本技能：以平台无关的方式约束中断→队列→任务链路、Application MainEventLoop、APP 异步 API、依赖注入、生命周期与失败降级。生成代码前必须先填写平台契约（入口与调度器、栈单位、ISR/临界区语义、回调上下文、构建系统），再按目标 MCU/SDK 生成 port/ 实现。适用于新建 RTOS 工程、新增 APP 模块/任务/队列/软件定时器、审查 ISR/事件循环/任务/内存分配，以及 ESP-IDF 与 STM32/CubeMX 的工程配置。Use when adding tasks, queues, semaphores, timers, ISR-to-task paths, or app modules with async APIs in a FreeRTOS/CMSIS-RTOS2 project, and when generating platform-specific code from a platform contract.'
+description: '编写或改造 RTOS MCU 工程（FreeRTOS / CMSIS-RTOS2 / ESP-IDF / STM32 / ESP32 / 嵌入式 C++）时使用本技能：以平台无关的方式约束中断→队列→任务链路、Application MainEventLoop、APP 异步 API、依赖注入、生命周期与失败降级。生成代码前必须先填写平台契约（入口与调度器、栈单位、ISR/临界区语义、回调上下文、构建系统），在 Layered / DIP（Ports & Adapters）/ Hybrid 三种架构模式中选择一种并用构建系统强制依赖方向，再按目标 MCU/SDK 生成 port/ 实现。适用于新建 RTOS 工程、新增 APP 模块/任务/队列/软件定时器、审查 ISR/事件循环/任务/内存分配、选择 app→bsp→devices 还是 app→devices←bsp 的工程结构，以及 ESP-IDF 与 STM32/CubeMX 的工程配置。Use when adding tasks, queues, semaphores, timers, ISR-to-task paths, or app modules with async APIs in a FreeRTOS/CMSIS-RTOS2 project, when choosing between layered and dependency-inverted device abstractions, and when generating platform-specific code from a platform contract.'
 argument-hint: 'MCU/RTOS/SDK 版本 + 要新增的 APP 模块 / 任务 / 数据流，例如"ESP32-C3 + ESP-IDF 6.0，加一个 MQTT 上报模块"'
 ---
 
@@ -12,6 +12,7 @@ argument-hint: 'MCU/RTOS/SDK 版本 + 要新增的 APP 模块 / 任务 / 数据�
 - `Application` 用 `MainEventLoop()` 统一派发中断事件与跨模块事件；
 - 每个 APP 类自己持有队列和任务，对外只暴露**异步 API**；
 - 依赖在构造时由 `Board` 注入，APP 内部不做全局查找；
+- **生成代码前先选定 Layered / DIP / Hybrid 架构模式**，记录到平台契约，并用构建系统强制依赖方向；
 - **所有平台差异必须显式写进「平台契约」**，再由 `port/` 落地。
 
 > 平台细节放在 `references/`，代码骨架放在 `templates/`。生成代码前先读
@@ -20,10 +21,11 @@ argument-hint: 'MCU/RTOS/SDK 版本 + 要新增的 APP 模块 / 任务 / 数据�
 ## 0. 使用顺序（强制）
 
 1. 从需求/仓库识别：MCU、核数、RTOS、SDK 版本、构建系统、外设。
-2. 阅读目标 SDK 的头文件与文档，填写 `references/platform-profile.md` 中的契约。
-3. 先实现 `port/`（唯一平台依赖点），再写 `bsp/`、`devices/`、`app/`。
-4. 按「检查清单」做语义检查，再编译、看 size、跑启动日志。
-5. 把契约与硬件假设记录到项目 `docs/platform.md` 与 `README.md`。
+2. 选择架构模式（Layered / DIP / Hybrid，见第 2 节），记录选择理由与模块边界。
+3. 阅读目标 SDK 的头文件与文档，填写 `references/platform-profile.md` 中的契约。
+4. 先实现 `port/`（唯一平台依赖点），再按选定模式写 `bsp/`、`devices/`、`app/`。
+5. 用构建系统强制依赖方向，按「检查清单」做语义检查，再编译、看 size、跑启动日志。
+6. 把契约、架构模式与硬件假设记录到项目 `docs/platform.md` 与 `README.md`。
 
 **不确定的语义不许猜。** 查不到就向用户确认，或标 TODO，不允许带着假设生成代码。
 
@@ -33,6 +35,7 @@ argument-hint: 'MCU/RTOS/SDK 版本 + 要新增的 APP 模块 / 任务 / 数据�
 
 | 契约项 | 为什么必须确认 | 典型取值 |
 | --- | --- | --- |
+| 架构模式 | 决定 app 依赖 bsp 还是 devices/services，以及 Board 的公开边界 | Layered / DIP / Hybrid |
 | MCU / 核数 | 决定临界区、任务亲和性、内存约束 | 单核 / 双核 |
 | RTOS / 版本 | 决定 API 与栈单位 | FreeRTOS / CMSIS-RTOS2 |
 | SDK / 版本 | 决定入口、组件、API 迁移 | ESP-IDF 6.x / CubeMX |
@@ -46,7 +49,14 @@ argument-hint: 'MCU/RTOS/SDK 版本 + 要新增的 APP 模块 / 任务 / 数据�
 | 定时器 / 厂商事件回调上下文 | 决定能否阻塞、能否 stop/free | ISR / 任务 |
 | 构建系统 / 分区限制 | 决定组件、include、flash 布局 | CMake / Keil / EIDE |
 
-## 2. 分层与依赖方向
+## 2. 分层与依赖方向（含架构模式选择）
+
+### 2.1 三种架构模式
+
+同一套代码可以用三种方式组织依赖。**生成代码前必须选定一种并记录到平台契约**，
+不允许在同一个模块里无规则地混用。
+
+#### A. Layered（分层模式）
 
 ```text
 app → bsp → devices → utility → port → RTOS / SDK
@@ -54,16 +64,110 @@ app → bsp → devices → utility → port → RTOS / SDK
  └──────┴──→ port（唯一平台依赖点）
 ```
 
-- `app/`：Application、各 APP 类（Display / Network / 采集 / 存储）。
-- `bsp/`：`Board` 单例、具体驱动、厂商回调 → 只投递。
-- `devices/`：器件抽象与纯算法；**不 include RTOS 与厂商头**。
+- `app` 直接使用 `bsp` 暴露的设备/服务类；`devices` 是 `bsp` 的实现细节。
+- 优点：文件少、间接层少、bring-up 快、代码/Flash 占用通常更小。
+- 缺点：`app` 与具体 BSP 耦合，换器件/换板/单测时修改面更大。
+- 适用：单板、单 MCU、器件固定、小团队、ROM/RAM 紧、无单测/多板需求。
+
+#### B. DIP / Ports & Adapters（依赖倒置）
+
+```text
+app → devices / services ← bsp
+             ↑
+           board（组合根）
+```
+
+- `devices/`：纯接口 + 纯协议/算法；**不 include RTOS、厂商头或上层**。
+- `services/`：WiFi / MQTT / 存储 / 时间等平台服务接口；不要硬塞进 `devices/`。
+- `bsp/`：实现 `devices` / `services` 接口，只做 IO context、ISR、厂商回调、总线事务。
+- `board`：组合根，实例化具体 BSP 并完成绑定；`board.hpp` 只暴露接口或 `BoardServices` 聚合。
+- `app`：只依赖 `devices` / `services` 接口；**不得 include `bsp/board.hpp`**
+  （否则仍然耦合到具体 BSP）。
+- 优点：可 mock/主机单测、可换板/换器件、边界清晰、适合并行开发。
+- 缺点：接口/适配器更多、间接层和调试链路更长、代码体积略增。
+- 适用：多板/多 MCU、器件可替换、需要主机侧测试、长期维护。
+
+> `Board.hpp` 返回接口还不够：如果 `app` 仍然 include `Board.hpp`，`app` 仍然依赖 BSP。
+> DIP 模式下应由 `main()`/组合根把 `BoardServices` 或 `IBoard` 注入 `Application`。
+
+#### C. Hybrid（混合模式）
+
+- 复杂/易变模块（显示、网络、存储、指纹、人脸）走 `devices`/`services` 接口。
+- 简单稳定模块（GPIO 锁、蜂鸣器、LED）可以直接用 `bsp` 具体类。
+- 必须在平台契约里逐模块列出“走哪条路径”，禁止同一模块两条路径并存。
+
+### 2.2 选择判据（按优先级）
+
+1. **板卡/器件变体**：≥ 2 个板卡/MCU/器件变体，或计划替换器件 → DIP/Hybrid。
+2. **可测试性**：需要 mock/主机单测的模块 → DIP/Hybrid。
+3. **复杂度**：≥ 3 个复杂或易变模块 → Hybrid/DIP。
+4. **团队与生命周期**：多人并行、长期维护、频繁换代 → DIP/Hybrid。
+5. **ROM/RAM**：只作为约束/否决项，不是主判据。
+   - 极紧（例如 RAM < 32 KB 或 Flash < 128 KB）且无测试/多板需求 →
+     Layered/Hybrid，避免接口爆炸。
+   - 资源充足不等于必须 DIP；仍按 1~4 选择。
+   - 用 `size` / `arm-none-eabi-size`、栈高水位实测，不要凭 MCU 型号猜。
+
+| 场景 | 推荐 |
+| --- | --- |
+| 单板、单 MCU、固定器件、小团队、快速交付 | Layered |
+| 多板/多 MCU、器件可替换、需要单测/mock、长期维护 | DIP |
+| 复杂模块多，但简单器件更多 | Hybrid |
+| ROM/RAM 极紧且无测试/多板需求 | Layered/Hybrid |
+
+### 2.3 用构建系统强制依赖
+
+以 ESP-IDF 组件为例（其他构建系统用等价的可见性/依赖机制）：
+
+Layered：
+
+```cmake
+idf_component_register(... REQUIRES bsp port)                    # app
+idf_component_register(... REQUIRES port PRIV_REQUIRES devices)  # bsp
+```
+
+DIP：
+
+```cmake
+idf_component_register(... REQUIRES devices services port)          # app
+idf_component_register(... REQUIRES devices services port)          # bsp
+idf_component_register(... REQUIRES app bsp devices services port)  # main
+```
+
+Hybrid：
+
+- 逐模块写清楚：抽象模块只出现在 `devices`/`services`；简单模块允许 `app` REQUIRE `bsp`。
+- 在平台契约里维护“模块 → 依赖路径”表，构建系统按表约束。
+
+**验收方法**：临时在 `app` 里 include 一个不允许的层，构建必须失败；
+如果仍能编译，说明依赖没有被真正约束。
+
+### 2.4 共同职责边界（三种模式都适用）
+
+- `app/`：Application、各 APP 类（Display / Network / 采集 / 存储）、队列与任务、异步 API。
+- `bsp/`：具体驱动、IO context、ISR、厂商回调 → 只投递。
+- `devices/`：器件抽象与纯算法；**不 include RTOS 与厂商头**；不创建任务/队列。
 - `utility/`：滤波、格式化、数据结构等纯逻辑。
 - `port/`：任务、队列、信号量、临界区、时间、调度器启动的薄封装。
 - `app/`、`bsp/` 可以使用 RTOS API，但**平台差异只允许出现在 `port/`**；
   `#ifdef ESP_PLATFORM`、`#ifdef STM32...` 不应散落在 APP 代码里。
 
-`Board` 是整个工程的板级资源入口：单例、私有构造、初始化一次。
+`Board` 是板级资源入口/组合根：单例、私有构造、初始化一次。
 APP 的依赖全部从构造函数注入，APP 内部不写 `Board::GetInstance().GetXxx()`。
+DIP 模式下，Board 的公开头只暴露 `devices`/`services` 接口或 `BoardServices` 聚合，
+具体 BSP 类型只在实现文件里出现。
+
+### 2.5 反模式
+
+| 反模式 | 正确做法 |
+| --- | --- |
+| app 同时 include bsp 和 devices，且没有逐模块规则 | 选定 Layered/DIP/Hybrid，逐模块写清边界 |
+| Board.hpp 暴露具体 bsp 类型，app 直接依赖驱动 | 暴露 devices/services 接口或 BoardServices |
+| bsp include app（反向依赖） | app → bsp 或 app → devices ← bsp |
+| devices include RTOS/厂商头 | devices 保持纯抽象，BSP 做适配 |
+| ISR 里调用设备协议/业务逻辑/打印/分配 | ISR 只投递，协议与业务在任务里 |
+| 为每个 GPIO 都造接口 | 复杂/易变模块才抽象，简单器件可具体类 |
+| 只在文档里写模式，没有用构建系统强制 | 用组件/模块依赖做编译期约束 |
 
 ## 3. 三条铁律
 
@@ -422,9 +526,15 @@ INIT → PROVISIONING → WIFI_CONNECTED → MQTT_CONNECTING → ONLINE
 | 不处理初始化失败 | `ready_` + 明确降级/停机 |
 | 离线数据无限缓存 | 明确丢弃/保留最新/环形缓冲 |
 | 日志打印密码/token | 脱敏或只打印长度/哈希 |
+| app 同时无规则依赖 bsp 和 devices | 选定 Layered/DIP/Hybrid 并用构建系统强制 |
+| Board.hpp 暴露具体驱动类型 | 暴露 devices/services 接口或 BoardServices |
 
 ## 15. 检查清单
 
+- [ ] 架构模式已选定（Layered / DIP / Hybrid），选择理由与模块边界已记录
+- [ ] 构建系统已强制依赖方向；临时 include 不允许的层会编译失败
+- [ ] DIP 模式下 app 不 include `bsp`/`Board.hpp`，Board 只暴露接口或 `BoardServices`
+- [ ] Hybrid 模式下逐模块列出依赖路径，没有同一模块双路径
 - [ ] 平台契约已填写并记录到 `docs/platform.md`
 - [ ] 入口函数与调度器启动模型正确；没有重复启动调度器
 - [ ] 栈单位确认；`port` API 用 `stack_bytes`；栈大小经过高水位验证
@@ -451,7 +561,7 @@ INIT → PROVISIONING → WIFI_CONNECTED → MQTT_CONNECTING → ONLINE
 
 | 文件 | 用途 |
 | --- | --- |
-| `references/platform-profile.md` | 平台契约模板、逐项查证方法、示例 profile |
+| `references/platform-profile.md` | 平台契约模板（含架构模式选择）、逐项查证方法、示例 profile |
 | `references/freertos-port-semantics.md` | 原生 FreeRTOS / ESP-IDF / CMSIS-RTOS2 语义差异与映射 |
 | `references/esp-idf.md` | ESP-IDF 启动、组件、IDF 6 API 迁移、回调上下文、验证 |
 | `references/stm32-cubemx.md` | STM32/CubeMX、HAL 时基、NVIC、静态分配、EIDE/Keil |
