@@ -306,7 +306,13 @@ APP 任务：QueueReceive / SemaphoreTake（阻塞等待）
 
 ## 9. 定时器
 
-- 能用周期任务 + delay-until 就不用软件定时器。
+选择顺序：
+
+1. **默认用周期任务 + delay-until**：逻辑独立、可阻塞、可单独调优先级。
+2. 只有在**低频（≤ 50 Hz）、实例多、每次工作量极小、回调只投递**时，才用共享软件
+   定时器，避免每个实例一个任务栈。判断方法、成本对比和按键采样案例见
+   `references/timer-vs-task.md`。
+
 - 软件定时器回调只投递，不阻塞、不等队列、不写 Flash、不 stop/free。
 - 区分 FreeRTOS software timer 与厂商 timer：
   - FreeRTOS timer 回调运行在定时器任务；
@@ -408,6 +414,7 @@ INIT → PROVISIONING → WIFI_CONNECTED → MQTT_CONNECTING → ONLINE
 | 用 `vTaskDelay` 做周期 | delay-until |
 | `while (!flag) {}` 忙等 | 阻塞在队列/信号量/通知 |
 | 定时器回调里阻塞 | 只投递 |
+| 每个低频轮询实例（按键/LED）都建一个任务 | 共享软件定时器（回调只投递） |
 | ISR 里拿互斥量 | 不可能；用队列/短临界区 |
 | `devices/` 里 include RTOS/厂商头 | 保持纯抽象 |
 | 运行期反复 create/delete/new | init 阶段创建一次 |
@@ -424,6 +431,7 @@ INIT → PROVISIONING → WIFI_CONNECTED → MQTT_CONNECTING → ONLINE
 - [ ] ISR 只清标志/搬数据/投递，使用 `...FromIsr` 并处理 woken
 - [ ] 中断优先级/中断级别满足目标 RTOS 的 ISR 安全约束
 - [ ] 厂商事件/定时器回调上下文已确认；回调里没有 stop/free/阻塞
+- [ ] 低频轮询实例已评估“任务 vs 共享软件定时器”，没有为每个实例单独建栈
 - [ ] `Application` 构造函数只建队列/注册回调，任务在 `Start()` 创建
 - [ ] `MainEventLoop()` 只派发中断事件与跨模块事件，handler 快速返回
 - [ ] 每个 APP 自持队列与任务，公有 API 都是“投递后返回”
@@ -448,6 +456,7 @@ INIT → PROVISIONING → WIFI_CONNECTED → MQTT_CONNECTING → ONLINE
 | `references/esp-idf.md` | ESP-IDF 启动、组件、IDF 6 API 迁移、回调上下文、验证 |
 | `references/stm32-cubemx.md` | STM32/CubeMX、HAL 时基、NVIC、静态分配、EIDE/Keil |
 | `references/callback-contexts.md` | ISR / 厂商事件 / 定时器 / 任务上下文矩阵与案例 |
+| `references/timer-vs-task.md` | 周期任务与软件定时器的选择依据、成本对比、按键采样案例 |
 | `templates/port/rtos_port.hpp` | 统一 port 接口（任务/队列/信号量/临界区/时间） |
 | `templates/esp-idf/` | ESP-IDF port 实现、`app_main`、组件 CMake、Kconfig、分区 |
 | `templates/stm32/` | 原生 FreeRTOS port 实现、栈 word→byte 换算、FreeRTOSConfig 说明 |

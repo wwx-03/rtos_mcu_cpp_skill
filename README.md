@@ -59,7 +59,8 @@ MCU 厂商、SDK 版本、栈单位、ISR 规则等会随平台变化的内容�
 │   ├── freertos-port-semantics.md   # FreeRTOS / ESP-IDF / CMSIS 语义差异
 │   ├── esp-idf.md                   # ESP-IDF 启动、组件、IDF 6 迁移
 │   ├── stm32-cubemx.md              # STM32/CubeMX、HAL、NVIC、EIDE/Keil
-│   └── callback-contexts.md         # ISR / 厂商事件 / 定时器 / 任务上下文
+│   ├── callback-contexts.md         # ISR / 厂商事件 / 定时器 / 任务上下文
+│   └── timer-vs-task.md             # 周期任务 vs 软件定时器（决策与案例）
 ├── templates/
 │   ├── port/rtos_port.hpp           # 统一 port 接口（stack_bytes 等）
 │   ├── esp-idf/                     # port 实现、app_main、CMake、Kconfig、分区
@@ -128,6 +129,7 @@ STM32F407 + FreeRTOS，把这个裸机工程改成 中断 → 队列 → 任务 
 | APP 异步 API、队列与载荷策略 | `SKILL.md` |
 | ISR → 任务链路、回调上下文 | `SKILL.md` + `references/callback-contexts.md` |
 | 任务、栈、同步原语、临界区、共享总线 | `SKILL.md` |
+| 周期任务 vs 软件定时器（按键采样） | `references/timer-vs-task.md` |
 | 失败降级、可观测性、时间、连接状态机 | `SKILL.md` |
 | 平台契约与查证方法 | `references/platform-profile.md` |
 | FreeRTOS / ESP-IDF / CMSIS 语义差异 | `references/freertos-port-semantics.md` |
