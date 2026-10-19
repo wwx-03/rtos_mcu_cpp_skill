@@ -99,9 +99,18 @@ class Network;
 class Display;
 class Keypad;
 class Lock;
+class Board;
+
+// 由具体板的 .cpp 通过 IMPLEMENT_BOARD_CLASS() 提供
+Board *create_new_board();
 
 class Board {
 public:
+	static Board &GetInstance() {
+		static Board *instance = create_new_board();
+		return *instance;
+	}
+
 	Board(const Board &) = delete;
 	Board &operator=(const Board &) = delete;
 
@@ -111,28 +120,31 @@ public:
 	virtual Lock *GetLock() = 0;
 
 protected:
+	// 声明拷贝构造会抑制隐式默认构造，必须显式保留
+	Board() = default;
 	// 静态对象，禁止通过基类指针 delete
 	~Board() = default;
 };
+
+// 具体板 .cpp 末尾使用一次
+#define IMPLEMENT_BOARD_CLASS(class_name) \
+	Board *create_new_board() {            \
+		static class_name instance;         \
+		return &instance;                   \
+	}
 ```
 
-具体板放在 `bsp/`，按板命名，`final` 继承：
+具体板**只在 `.cpp` 里定义，不提供 `.hpp`**：
 
 ```cpp
-// bsp/esp32_smart_lock_v01_board.hpp
-#pragma once
-
+// bsp/esp32_smart_lock_v01_board.cpp
 #include "devices/board.hpp"
+
+namespace {
 
 class Esp32SmartLockV01Board final : public Board {
 public:
-	static Esp32SmartLockV01Board &GetInstance() {
-		static Esp32SmartLockV01Board instance;
-		return instance;
-	}
-
-	Esp32SmartLockV01Board(const Esp32SmartLockV01Board &) = delete;
-	Esp32SmartLockV01Board &operator=(const Esp32SmartLockV01Board &) = delete;
+	Esp32SmartLockV01Board();
 
 	Network *GetNetwork() override { return &network_; }
 	Display *GetDisplay() override { return &display_; }
@@ -143,13 +155,15 @@ public:
 	void RefreshWatchdog();
 
 private:
-	Esp32SmartLockV01Board();
-
 	Esp32MqttNetwork network_;
 	Ssd1306Display display_;
 	MatrixKeypad keypad_;
 	GpioLock lock_;
 };
+
+}  // namespace
+
+IMPLEMENT_BOARD_CLASS(Esp32SmartLockV01Board);
 ```
 
 规则：
@@ -157,29 +171,21 @@ private:
 1. **命名**：`<MCU><BoardName><Version>Board`，PascalCase，`final`，`override` 显式写出。
 2. **抽象 `Board` 只有 `GetXxx()`**，返回 `devices`/`services` 接口指针；不放 HAL 类型、不放板级常量。
 3. **板级专用能力**（喂狗、板号、自检）留在具体类，或单独抽服务接口；不要让 app 依赖具体板。
-4. **生命周期**：具体板是静态对象（函数内 `static` 或命名空间作用域），构造必须早于中断使能；
-   `devices` 接口析构用 `protected` 非虚，禁止 `delete`。
-5. **唯一选板点**：`bsp/board_select.hpp` 决定编译哪块板；
-   `main()` 只 include `devices/board.hpp` + `board_select.hpp`。
-6. **app 不 include `bsp/`**：`Application` 的构造/`Start()` 接收 `Board &`，内部只用接口。
-
-```cpp
-// bsp/board_select.hpp —— 全工程唯一的选板点
-#pragma once
-
-#include "bsp/esp32_smart_lock_v01_board.hpp"
-
-using ActiveBoard = Esp32SmartLockV01Board;
-```
+4. **具体板只在 `.cpp` 内定义**，外部只能通过抽象 `Board` 访问；不要为它写 `.hpp`。
+5. **生命周期**：`IMPLEMENT_BOARD_CLASS` 用函数内静态对象，不引入 `new` / `malloc`；
+   构造必须早于中断使能与任务创建。
+6. **选板**：构建时只编译一个 `bsp/*_board.cpp`（多个 → 链接期重复符号，缺失 → undefined reference），
+   不需要 `board_select.hpp`，也没有 `#ifdef`。
+7. **app 不 include `bsp/`**：`Application` 的构造/`Start()` 接收 `Board &`，内部只用接口。
 
 ```cpp
 // main.cpp
 #include "app/application.hpp"
-#include "bsp/board_select.hpp"
+#include "devices/board.hpp"
 
 extern "C" void app_main(void) {
-	static ActiveBoard board;   // 构造早于中断/任务
-	Application::GetInstance().Start(board);
+	// 具体板由 IMPLEMENT_BOARD_CLASS 注册；第一次调用早于任务创建
+	Application::GetInstance().Start(Board::GetInstance());
 }
 ```
 
@@ -252,7 +258,8 @@ Hybrid：
 
 - **Layered**：具体 `Board` 单例、私有构造、初始化一次，返回具体设备类。
 - **DIP**：抽象 `Board` 只含 `GetXxx()`；具体 `<MCU><BoardName><Version>Board`
-  在 `bsp/` 实现，由 `board_select.hpp` 选定，`main()` 注入 `Application`。
+  只在 `bsp/<board>_board.cpp` 内定义，末尾用 `IMPLEMENT_BOARD_CLASS()` 注册，
+  `main()` 注入 `Application`。
 - **Hybrid**：抽象 `Board` 只返回被抽象的设备；简单器件可留在具体板或直接返回具体类。
 
 APP 的依赖全部从构造函数注入，APP 内部不写 `Board::GetInstance().GetXxx()`。
@@ -272,7 +279,8 @@ DIP 模式下，`devices/board.hpp` 只暴露 `devices`/`services` 接口，
 | 只在文档里写模式，没有用构建系统强制 | 用组件/模块依赖做编译期约束 |
 | 抽象 `Board` 上出现板级专用方法（喂狗、板号、自检） | 留在具体板或抽成服务接口 |
 | 具体板类仍叫 `Board`，与抽象类重名 | `<MCU><BoardName><Version>Board` |
-| 多个地方 `#ifdef` 选板 | 全工程一个 `bsp/board_select.hpp` |
+| 多个地方 `#ifdef` 选板 | 只编译一个 `bsp/*_board.cpp`，由链接期唯一符号选板 |
+| 为具体板写 `.hpp` 并让 app include 它 | 具体板只在 `.cpp` 内定义，外部只见抽象 `Board` |
 
 ## 3. 三条铁律
 

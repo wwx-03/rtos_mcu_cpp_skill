@@ -77,30 +77,48 @@ idf_component_register(
 DIP 的 Board 与选板：
 
 ```cpp
-// devices/board.hpp —— 抽象 Board，只暴露设备接口
+// devices/board.hpp —— 抽象 Board + 工厂 + 宏
+class Board;
+Board *create_new_board();
+
 class Board {
 public:
+	static Board &GetInstance() {
+		static Board *instance = create_new_board();
+		return *instance;
+	}
+
 	virtual Network *GetNetwork() = 0;
 	virtual Display *GetDisplay() = 0;
 
 protected:
+	Board() = default;    // 必须有：声明拷贝构造会抑制默认构造
 	~Board() = default;   // 静态对象，禁止 delete
 };
 
-// bsp/esp32_smart_lock_v01_board.hpp —— 按板命名
+#define IMPLEMENT_BOARD_CLASS(class_name) \
+	Board *create_new_board() {            \
+		static class_name instance;         \
+		return &instance;                   \
+	}
+
+// bsp/esp32_smart_lock_v01_board.cpp —— 具体板只在 .cpp 内定义（无 .hpp）
+namespace {
 class Esp32SmartLockV01Board final : public Board {
 public:
 	Network *GetNetwork() override;
 	Display *GetDisplay() override;
 };
+}  // namespace
 
-// bsp/board_select.hpp —— 唯一选板点
-using ActiveBoard = Esp32SmartLockV01Board;
+IMPLEMENT_BOARD_CLASS(Esp32SmartLockV01Board);
 
 // main.cpp —— 组合根
-static ActiveBoard board;
-Application::GetInstance().Start(board);
+Application::GetInstance().Start(Board::GetInstance());
 ```
+
+在 ESP-IDF 组件里，选板 = 只把一块板的 `.cpp` 加入 `SRCS`；
+加入两块会链接期重复符号，一块都没有会 undefined reference。
 
 验收：在 app 里 include 一个不允许的层，构建必须失败。
 

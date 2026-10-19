@@ -7,7 +7,9 @@
 - [ ] 架构模式（Layered / DIP / Hybrid）已选定，理由与模块边界已记录
 - [ ] 构建系统已强制依赖方向；临时 include 不允许的层会编译失败
 - [ ] DIP/Hybrid：抽象 `Board` 只含 `GetXxx()`，具体板已按 `<MCU><BoardName><Version>Board` 命名
-- [ ] DIP/Hybrid：全工程只有一个选板点（`board_select.hpp`），`main()` 注入 `Board &`
+- [ ] DIP/Hybrid：具体板只在 `bsp/<board>_board.cpp` 内定义，末尾 `IMPLEMENT_BOARD_CLASS()`
+- [ ] DIP/Hybrid：全工程只编译一个板级 `.cpp`（多个 → 重复符号，缺失 → undefined reference）
+- [ ] DIP/Hybrid：`main()` 用 `Start(Board::GetInstance())` 注入 `Board &`
 - [ ] DIP/Hybrid：`devices` 接口析构为 `protected` 非虚，没有 `delete` 基类
 - [ ] MCU、核数、RTOS、SDK 版本已确认
 - [ ] 入口函数与调度器启动模型已确认
