@@ -74,21 +74,117 @@ app → bsp → devices → utility → port → RTOS / SDK
 ```text
 app → devices / services ← bsp
              ↑
-           board（组合根）
+      abstract Board（devices）
+             ↑
+  Esp32SmartLockV01Board（bsp，按板命名）
 ```
 
 - `devices/`：纯接口 + 纯协议/算法；**不 include RTOS、厂商头或上层**。
 - `services/`：WiFi / MQTT / 存储 / 时间等平台服务接口；不要硬塞进 `devices/`。
 - `bsp/`：实现 `devices` / `services` 接口，只做 IO context、ISR、厂商回调、总线事务。
-- `board`：组合根，实例化具体 BSP 并完成绑定；`board.hpp` 只暴露接口或 `BoardServices` 聚合。
-- `app`：只依赖 `devices` / `services` 接口；**不得 include `bsp/board.hpp`**
-  （否则仍然耦合到具体 BSP）。
+- `app`：只依赖 `devices` / `services` 接口；**不得 include `bsp/` 下任何头**。
 - 优点：可 mock/主机单测、可换板/换器件、边界清晰、适合并行开发。
 - 缺点：接口/适配器更多、间接层和调试链路更长、代码体积略增。
 - 适用：多板/多 MCU、器件可替换、需要主机侧测试、长期维护。
 
-> `Board.hpp` 返回接口还不够：如果 `app` 仍然 include `Board.hpp`，`app` 仍然依赖 BSP。
-> DIP 模式下应由 `main()`/组合根把 `BoardServices` 或 `IBoard` 注入 `Application`。
+#### Board 的形态（DIP 固定写法）
+
+抽象 `Board` 放在 `devices/board.hpp`，只暴露设备/服务接口：
+
+```cpp
+// devices/board.hpp
+#pragma once
+
+class Network;
+class Display;
+class Keypad;
+class Lock;
+
+class Board {
+public:
+	Board(const Board &) = delete;
+	Board &operator=(const Board &) = delete;
+
+	virtual Network *GetNetwork() = 0;
+	virtual Display *GetDisplay() = 0;
+	virtual Keypad *GetKeypad() = 0;
+	virtual Lock *GetLock() = 0;
+
+protected:
+	// 静态对象，禁止通过基类指针 delete
+	~Board() = default;
+};
+```
+
+具体板放在 `bsp/`，按板命名，`final` 继承：
+
+```cpp
+// bsp/esp32_smart_lock_v01_board.hpp
+#pragma once
+
+#include "devices/board.hpp"
+
+class Esp32SmartLockV01Board final : public Board {
+public:
+	static Esp32SmartLockV01Board &GetInstance() {
+		static Esp32SmartLockV01Board instance;
+		return instance;
+	}
+
+	Esp32SmartLockV01Board(const Esp32SmartLockV01Board &) = delete;
+	Esp32SmartLockV01Board &operator=(const Esp32SmartLockV01Board &) = delete;
+
+	Network *GetNetwork() override { return &network_; }
+	Display *GetDisplay() override { return &display_; }
+	Keypad *GetKeypad() override { return &keypad_; }
+	Lock *GetLock() override { return &lock_; }
+
+	// 板级专用能力不放进抽象 Board
+	void RefreshWatchdog();
+
+private:
+	Esp32SmartLockV01Board();
+
+	Esp32MqttNetwork network_;
+	Ssd1306Display display_;
+	MatrixKeypad keypad_;
+	GpioLock lock_;
+};
+```
+
+规则：
+
+1. **命名**：`<MCU><BoardName><Version>Board`，PascalCase，`final`，`override` 显式写出。
+2. **抽象 `Board` 只有 `GetXxx()`**，返回 `devices`/`services` 接口指针；不放 HAL 类型、不放板级常量。
+3. **板级专用能力**（喂狗、板号、自检）留在具体类，或单独抽服务接口；不要让 app 依赖具体板。
+4. **生命周期**：具体板是静态对象（函数内 `static` 或命名空间作用域），构造必须早于中断使能；
+   `devices` 接口析构用 `protected` 非虚，禁止 `delete`。
+5. **唯一选板点**：`bsp/board_select.hpp` 决定编译哪块板；
+   `main()` 只 include `devices/board.hpp` + `board_select.hpp`。
+6. **app 不 include `bsp/`**：`Application` 的构造/`Start()` 接收 `Board &`，内部只用接口。
+
+```cpp
+// bsp/board_select.hpp —— 全工程唯一的选板点
+#pragma once
+
+#include "bsp/esp32_smart_lock_v01_board.hpp"
+
+using ActiveBoard = Esp32SmartLockV01Board;
+```
+
+```cpp
+// main.cpp
+#include "app/application.hpp"
+#include "bsp/board_select.hpp"
+
+extern "C" void app_main(void) {
+	static ActiveBoard board;   // 构造早于中断/任务
+	Application::GetInstance().Start(board);
+}
+```
+
+> 只把 `Board.hpp` 改成返回接口还不够：如果 app 仍然 include 它，app 仍然依赖 BSP。
+> DIP 模式下 `Application` 必须由 `main()` 注入 `Board &`（或 `BoardServices`）。
 
 #### C. Hybrid（混合模式）
 
@@ -152,10 +248,16 @@ Hybrid：
 - `app/`、`bsp/` 可以使用 RTOS API，但**平台差异只允许出现在 `port/`**；
   `#ifdef ESP_PLATFORM`、`#ifdef STM32...` 不应散落在 APP 代码里。
 
-`Board` 是板级资源入口/组合根：单例、私有构造、初始化一次。
+`Board` 是板级资源入口/组合根：
+
+- **Layered**：具体 `Board` 单例、私有构造、初始化一次，返回具体设备类。
+- **DIP**：抽象 `Board` 只含 `GetXxx()`；具体 `<MCU><BoardName><Version>Board`
+  在 `bsp/` 实现，由 `board_select.hpp` 选定，`main()` 注入 `Application`。
+- **Hybrid**：抽象 `Board` 只返回被抽象的设备；简单器件可留在具体板或直接返回具体类。
+
 APP 的依赖全部从构造函数注入，APP 内部不写 `Board::GetInstance().GetXxx()`。
-DIP 模式下，Board 的公开头只暴露 `devices`/`services` 接口或 `BoardServices` 聚合，
-具体 BSP 类型只在实现文件里出现。
+DIP 模式下，`devices/board.hpp` 只暴露 `devices`/`services` 接口，
+具体 BSP 类型只在 `bsp/` 与 `main()` 里出现。
 
 ### 2.5 反模式
 
@@ -168,6 +270,9 @@ DIP 模式下，Board 的公开头只暴露 `devices`/`services` 接口或 `Boar
 | ISR 里调用设备协议/业务逻辑/打印/分配 | ISR 只投递，协议与业务在任务里 |
 | 为每个 GPIO 都造接口 | 复杂/易变模块才抽象，简单器件可具体类 |
 | 只在文档里写模式，没有用构建系统强制 | 用组件/模块依赖做编译期约束 |
+| 抽象 `Board` 上出现板级专用方法（喂狗、板号、自检） | 留在具体板或抽成服务接口 |
+| 具体板类仍叫 `Board`，与抽象类重名 | `<MCU><BoardName><Version>Board` |
+| 多个地方 `#ifdef` 选板 | 全工程一个 `bsp/board_select.hpp` |
 
 ## 3. 三条铁律
 

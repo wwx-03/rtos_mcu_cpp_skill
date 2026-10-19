@@ -28,6 +28,8 @@
 - 选择理由（变体/测试/复杂度/团队/资源）：
 - app 可见的抽象：bsp / devices+services / 混合
 - 模块边界：哪些模块走接口，哪些用具体类
+- Board 形态：具体类 / 抽象类 + 具体板类名
+- 唯一选板点（DIP/Hybrid）：`bsp/board_select.hpp`
 - 构建约束：app 不允许 include 的层；CMake（或等价机制）如何强制
 
 ## 启动与调度
@@ -100,6 +102,14 @@
 - **Layered**：`app → bsp → devices → port`；app 依赖 bsp，devices 是 bsp 私有实现。
 - **DIP**：`app → devices/services ← bsp`；board 是组合根；app 不得 include bsp/Board。
 - **Hybrid**：复杂/易变模块走接口，简单模块用具体类；逐模块记录依赖路径。
+
+Board 形态（DIP/Hybrid 必填）：
+
+- 抽象 `Board` 所在头：`devices/board.hpp`（只含 `GetXxx()`）
+- 具体板类名：`<MCU><BoardName><Version>Board`，例如 `Esp32SmartLockV01Board`
+- 唯一选板点：`bsp/board_select.hpp` 中的 `using ActiveBoard = ...`
+- 注入方式：`main()` 持有静态 `ActiveBoard`，传给 `Application::Start(Board &)`
+- 板级专用能力（喂狗/板号/自检）：留在具体板，或抽成独立服务接口
 
 构建约束示例（ESP-IDF）：
 
@@ -195,6 +205,8 @@ idf_component_register(... REQUIRES app bsp devices services port)  # main
 - Board.hpp 暴露具体驱动类型，app 直接依赖具体 BSP；
 - 只在文档里写 Layered/DIP，但构建系统仍允许任意 include；
 - DIP 模式下 app 仍然 include `Board.hpp` 或具体 BSP 头；
+- 抽象 `Board` 上出现喂狗/板号/引脚常量等板级专用内容；
+- 具体板类仍叫 `Board`，或没有唯一选板点；
 - 准备用旧版本 SDK 的 API（例如 IDF 6 的 `freertos/` 前缀、`i2c_master`、托管 mqtt）。
 
 **没有填完契约就开始写代码，视为未完成平台适配。**

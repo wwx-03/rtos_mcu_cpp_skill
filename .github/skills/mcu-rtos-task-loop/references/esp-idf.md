@@ -74,6 +74,34 @@ idf_component_register(
 # main: REQUIRES app bsp devices services port
 ```
 
+DIP 的 Board 与选板：
+
+```cpp
+// devices/board.hpp —— 抽象 Board，只暴露设备接口
+class Board {
+public:
+	virtual Network *GetNetwork() = 0;
+	virtual Display *GetDisplay() = 0;
+
+protected:
+	~Board() = default;   // 静态对象，禁止 delete
+};
+
+// bsp/esp32_smart_lock_v01_board.hpp —— 按板命名
+class Esp32SmartLockV01Board final : public Board {
+public:
+	Network *GetNetwork() override;
+	Display *GetDisplay() override;
+};
+
+// bsp/board_select.hpp —— 唯一选板点
+using ActiveBoard = Esp32SmartLockV01Board;
+
+// main.cpp —— 组合根
+static ActiveBoard board;
+Application::GetInstance().Start(board);
+```
+
 验收：在 app 里 include 一个不允许的层，构建必须失败。
 
 IDF 6 中 `#include "FreeRTOS.h"` 不再默认可用，必须：
