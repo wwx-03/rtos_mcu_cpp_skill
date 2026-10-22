@@ -11,6 +11,9 @@
 - [ ] DIP/Hybrid：全工程只编译一个板级 `.cpp`（多个 → 重复符号，缺失 → undefined reference）
 - [ ] DIP/Hybrid：`main()` 用 `Start(Board::GetInstance())` 注入 `Board &`
 - [ ] DIP/Hybrid：`devices` 接口析构为 `protected` 非虚，没有 `delete` 基类
+- [ ] Hybrid：实现层没有公共头文件，或公共头只包含接口类型
+- [ ] Hybrid：`references/module-matrix.md` 已填写模块路径与例外
+- [ ] `port` 覆盖 timer / 栈高水位 / heap 诊断；静态分配策略已记录
 - [ ] MCU、核数、RTOS、SDK 版本已确认
 - [ ] 入口函数与调度器启动模型已确认
 - [ ] 任务创建 API 栈单位已确认（byte / word）
@@ -47,6 +50,8 @@
 - [ ] 栈高水位有打印或诊断接口
 - [ ] heap 水位有打印或诊断接口
 - [ ] 条件编译分支分别构建通过
+- [ ] 产品级检查已完成：OTA/分区、低功耗、看门狗、NVS 迁移、安全、离线缓存
+- [ ] 有主机侧测试入口或 mock 方案，关键状态机有台架/HIL 测试
 
 ## 4. RTOS 行为
 
@@ -62,6 +67,8 @@
 - [ ] 互斥量只在任务里获取
 - [ ] 临界区短小，双核场景使用跨核原语
 - [ ] 没有运行期 create/delete/new
+- [ ] `std::function`/`std::string`/STL 的分配风险已评估，策略与平台契约一致
+- [ ] 每个并发域的任务预算（栈/优先级/周期/阻塞点）已记录
 
 ## 5. 数据与状态
 

@@ -66,7 +66,11 @@ xTaskCreate(entry, "task", 512, arg, priority, &handle);  // 512 words ≈ 2KB
 xTaskCreate(entry, name, stack_bytes / sizeof(StackType_t), arg, priority, &handle);
 ```
 
-`uxTaskGetStackHighWaterMark()` 在原生 FreeRTOS 返回 word。
+`uxTaskGetStackHighWaterMark()` 在原生 FreeRTOS 返回 word；`port::GetStackHighWaterMark`
+会换算成字节，和 ESP-IDF 的语义保持一致。
+
+`templates/stm32/port/rtos_port.cpp` 还提供 `CreateTimer/Start/Stop/Reset/DeleteTimer`
+以及堆诊断。timer 回调运行在 timer task，只能投递。
 
 ## 4. 静态分配
 

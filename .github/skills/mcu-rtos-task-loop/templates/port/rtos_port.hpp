@@ -16,7 +16,12 @@ namespace port {
 using TaskHandle = void *;
 using QueueHandle = void *;
 using SemaphoreHandle = void *;
+using TimerHandle = void *;
 using TaskEntry = void (*)(void *);
+using TimerEntry = void (*)(void *);
+
+// 跨平台“永久等待”值；平台实现负责映射到 portMAX_DELAY。
+constexpr uint32_t kWaitForever = 0xFFFFFFFFu;
 
 struct TaskOptions {
 	const char *name;
@@ -24,6 +29,18 @@ struct TaskOptions {
 	void *arg;
 	int priority;
 };
+
+struct TimerOptions {
+	const char *name;
+	uint32_t period_ms;
+	bool auto_reload;
+	void *arg;
+};
+
+// 静态分配：不同平台差异较大，模板不提供统一 API。
+// 需要静态创建时，在平台 port 中按 SDK 语义包装 xTaskCreateStatic /
+// xQueueCreateStatic / xTimerCreateStatic，并在平台契约中记录缓冲区类型、
+// 对齐要求和栈单位。不要把 xTaskCreateStatic 的 word/byte 语义直接套到其他平台。
 
 bool CreateTask(TaskEntry entry, const TaskOptions &options, TaskHandle *out);
 
@@ -47,6 +64,14 @@ bool TaskNotifyGiveFromIsr(TaskHandle task, bool *woken);
 // 等待一次通知；返回 true 表示收到并清除计数。
 bool TaskNotifyTake(uint32_t timeout_ms);
 
+// 定时器回调运行在 timer service 任务：只投递，不阻塞、不 stop/free 其他资源。
+bool CreateTimer(TimerEntry entry, const TimerOptions &options, TimerHandle *out);
+// delay_ms 是启动/重置前的阻塞等待时间，不是新的周期。
+bool StartTimer(TimerHandle timer, uint32_t delay_ms);
+bool StopTimer(TimerHandle timer, uint32_t wait_ms);
+bool ResetTimer(TimerHandle timer, uint32_t delay_ms);
+bool DeleteTimer(TimerHandle timer, uint32_t wait_ms);
+
 void EnterCritical();
 void ExitCritical();
 void YieldFromIsr(bool woken);
@@ -57,6 +82,12 @@ void DelayMs(uint32_t ms);
 
 // 周期延时，避免 DelayMs 的累积漂移。
 // last_wake_ms 的初值写 0，首次调用会以当前时间初始化。
+// 该参数是 32 位毫秒，约 49 天回绕；长期运行诊断请用 NowMs()。
 void DelayUntil(uint32_t *last_wake_ms, uint32_t period_ms);
+
+// 诊断：ESP-IDF 下栈高水位返回字节；原生 FreeRTOS 由 port 换算为字节。
+uint32_t GetStackHighWaterMark(TaskHandle task);
+uint32_t GetFreeHeap();
+uint32_t GetMinimumEverFreeHeap();
 
 }  // namespace port

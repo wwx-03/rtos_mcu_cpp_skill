@@ -10,18 +10,23 @@ argument-hint: 'MCU/RTOS/SDK 版本 + 要新增的 APP 模块 / 任务 / 数据�
 
 - 中断只把数据/事件投递给队列；
 - `Application` 用 `MainEventLoop()` 统一派发中断事件与跨模块事件；
-- 每个 APP 类自己持有队列和任务，对外只暴露**异步 API**；
+- 每个 APP/并发域自己持有队列和任务，对外只暴露**异步 API**；
 - 依赖在构造时由 `Board` 注入，APP 内部不做全局查找；
 - **生成代码前先选定 Layered / DIP / Hybrid 架构模式**，记录到平台契约，并用构建系统强制依赖方向；
 - **所有平台差异必须显式写进「平台契约」**，再由 `port/` 落地。
 
 > 平台细节放在 `references/`，代码骨架放在 `templates/`。生成代码前先读
 > `references/platform-profile.md`，完成平台契约，再开始写代码。
+>
+> **范围说明**：本 skill 的核心是 RTOS 并发、回调和分层纪律，不是完整产品架构方法论。
+> OTA/分区、低功耗、看门狗、NVS 迁移、安全、离线缓存等见
+> `references/product-architecture.md`；逐模块依赖与任务预算见 `references/module-matrix.md`。
 
 ## 0. 使用顺序（强制）
 
 1. 从需求/仓库识别：MCU、核数、RTOS、SDK 版本、构建系统、外设。
-2. 选择架构模式（Layered / DIP / Hybrid，见第 2 节），记录选择理由与模块边界。
+2. 选择架构模式（Layered / DIP / Hybrid，见第 2 节），记录选择理由与模块边界，
+   并填写 `references/module-matrix.md` 的模块路径、任务预算与分配策略。
 3. 阅读目标 SDK 的头文件与文档，填写 `references/platform-profile.md` 中的契约。
 4. 先实现 `port/`（唯一平台依赖点），再按选定模式写 `bsp/`、`devices/`、`app/`。
 5. 用构建系统强制依赖方向，按「检查清单」做语义检查，再编译、看 size、跑启动日志。
@@ -59,10 +64,12 @@ argument-hint: 'MCU/RTOS/SDK 版本 + 要新增的 APP 模块 / 任务 / 数据�
 #### A. Layered（分层模式）
 
 ```text
-app → bsp → devices → utility → port → RTOS / SDK
+app → bsp → devices → utility
  │      │
- └──────┴──→ port（唯一平台依赖点）
+ └──────┴──→ port → RTOS / SDK
 ```
+
+> `devices` 不应依赖 `port`/RTOS；`port` 由 `app` 和 `bsp` 使用。
 
 - `app` 直接使用 `bsp` 暴露的设备/服务类；`devices` 是 `bsp` 的实现细节。
 - 优点：文件少、间接层少、bring-up 快、代码/Flash 占用通常更小。
@@ -191,12 +198,23 @@ extern "C" void app_main(void) {
 
 > 只把 `Board.hpp` 改成返回接口还不够：如果 app 仍然 include 它，app 仍然依赖 BSP。
 > DIP 模式下 `Application` 必须由 `main()` 注入 `Board &`（或 `BoardServices`）。
+>
+> 单例边界：`Board::GetInstance()` 只应出现在组合根 `main()`；为了主机侧测试，
+> `Application` 应可构造并注入依赖，不要把 `GetInstance()` 写进业务逻辑。
+> devices 接口的 protected 非虚析构适合静态对象；如果需要 mock 或 `unique_ptr`，
+> 使用虚析构或显式 deleter，并在测试构建中明确生命周期。
 
 #### C. Hybrid（混合模式）
 
-- 复杂/易变模块（显示、网络、存储、指纹、人脸）走 `devices`/`services` 接口。
+- 复杂/易变模块（显示、网络、MQTT 传输、存储、指纹、人脸）走 `devices`/`services` 接口。
+- 典型拆分：WiFi/MQTT 传输/存储/时间走 `services` 接口 + BSP 适配器；
+  JSON 报文、命令分发、业务状态机留在 `app`，不要塞进 BSP。
 - 简单稳定模块（GPIO 锁、蜂鸣器、LED）可以直接用 `bsp` 具体类。
-- 必须在平台契约里逐模块列出“走哪条路径”，禁止同一模块两条路径并存。
+- 必须在 `references/module-matrix.md` 中逐模块列出“走哪条路径”，禁止同一模块两条路径并存。
+- **构建约束警告**：ESP-IDF 的组件依赖是组件级而非模块级。一旦 `app` `REQUIRES bsp`，
+  app 就能 include bsp 的所有公共头文件，无法再按模块强制。真要加强制，必须让
+  实现层不暴露公共头（头文件放 `src/` + `PRIV_INCLUDE_DIRS`），或把模块拆成独立组件。
+  只在文档里写“逐模块”不算完成。
 
 ### 2.2 选择判据（按优先级）
 
@@ -239,15 +257,19 @@ idf_component_register(... REQUIRES app bsp devices services port)  # main
 Hybrid：
 
 - 逐模块写清楚：抽象模块只出现在 `devices`/`services`；简单模块允许 `app` REQUIRE `bsp`。
-- 在平台契约里维护“模块 → 依赖路径”表，构建系统按表约束。
+  但 REQUIRE `bsp` 会暴露全部 BSP 公共头，只在实现层无公共头或模块独立成组件时才成立。
+- 在 `references/module-matrix.md` 和平台契约里维护“模块 → 依赖路径”表，构建系统按表约束。
 
 **验收方法**：临时在 `app` 里 include 一个不允许的层，构建必须失败；
-如果仍能编译，说明依赖没有被真正约束。
+如果仍能编译，说明依赖没有被真正约束。Hybrid 下如果 `app` 为了简单模块
+`REQUIRES bsp`，这条验收只对该模块成立，对其他抽象模块不成立；请在
+`references/module-matrix.md` 中记录例外。
 
 ### 2.4 共同职责边界（三种模式都适用）
 
 - `app/`：Application、各 APP 类（Display / Network / 采集 / 存储）、队列与任务、异步 API。
-- `bsp/`：具体驱动、IO context、ISR、厂商回调 → 只投递。
+- `bsp/`：具体驱动、IO context、ISR、厂商回调 → 只投递。实现层默认不暴露公共头；
+  驱动/板级头放 `src/`，用 `PRIV_INCLUDE_DIRS` 只对本组件可见。
 - `devices/`：器件抽象与纯算法；**不 include RTOS 与厂商头**；不创建任务/队列。
 - `utility/`：滤波、格式化、数据结构等纯逻辑。
 - `port/`：任务、队列、信号量、临界区、时间、调度器启动的薄封装。
@@ -270,9 +292,11 @@ DIP 模式下，`devices/board.hpp` 只暴露 `devices`/`services` 接口，
 
 | 反模式 | 正确做法 |
 | --- | --- |
-| app 同时 include bsp 和 devices，且没有逐模块规则 | 选定 Layered/DIP/Hybrid，逐模块写清边界 |
+| app 同时 include bsp 和 devices，且没有逐模块规则 | 选定 Layered/DIP/Hybrid，用 module-matrix 逐模块写清边界 |
+| Hybrid 只在文档写“逐模块”，实现层仍暴露公共头 | 实现头放 `src/` + `PRIV_INCLUDE_DIRS`，或拆独立组件 |
 | Board.hpp 暴露具体 bsp 类型，app 直接依赖驱动 | 暴露 devices/services 接口或 BoardServices |
 | bsp include app（反向依赖） | app → bsp 或 app → devices ← bsp |
+| 在 ISR/高频路径使用捕获式 `std::function`/`std::string` | 函数指针 + context、固定缓冲、池化 |
 | devices include RTOS/厂商头 | devices 保持纯抽象，BSP 做适配 |
 | ISR 里调用设备协议/业务逻辑/打印/分配 | ISR 只投递，协议与业务在任务里 |
 | 为每个 GPIO 都造接口 | 复杂/易变模块才抽象，简单器件可具体类 |
@@ -378,7 +402,7 @@ void Application::Start() {
 
 ## 6. APP 类：依赖注入 + 异步 API
 
-每个 APP 类是一个自治单元：自己持有队列与任务，对外只暴露“投递后返回”的方法。
+每个 APP/并发域是一个自治单元：自己持有队列与任务，对外只暴露“投递后返回”的方法。
 
 ```cpp
 class Display {
@@ -428,6 +452,15 @@ void Display::ShowText(const char *text) {
 - 不要在公有 API 里等队列、等信号量、写 Flash、阻塞发送。
 - APP 之间通过异步 API 交互；跨模块事件由 `Application` 转投递。
 
+### 单例、测试与接口生命周期
+
+- `Board::GetInstance()` 只用于组合根；业务模块不应内部全局查找。
+- 主机侧测试优先构造 `Application` 并注入假 `Board`/services，而不是依赖单例。
+- devices 接口的 protected 非虚析构适合静态对象；若测试需要 mock 或 `unique_ptr`，
+  改用虚析构或显式 deleter，并在平台契约中记录该选择。
+- 为可测试性，`devices`/`services` 接口不应依赖 RTOS/厂商头；测试构建用普通 CMake
+  编译纯逻辑 + mock 实现，HIL 再跑真实 BSP。
+
 ## 7. 中断 → 任务链路与回调上下文
 
 ```text
@@ -467,8 +500,10 @@ APP 任务：QueueReceive / SemaphoreTake（阻塞等待）
 
 ### 任务设计
 
-- **一个 APP 类一个任务**：`network`、`display`、`sensor`、`storage`；
-  不要按外设拆成 `uart1_task`、`gpio_task`。
+- **一个并发域/资源 owner 一个任务**，不是“一个 APP 类一个任务”。
+  同一队列/周期/生命周期的模块应合并；低频轮询优先共享软件定时器或主循环。
+- 不要按外设拆成 `uart1_task`、`gpio_task`；按业务 owner 拆。
+- 在 `references/module-matrix.md` 中记录任务预算（任务数、栈、优先级、周期、阻塞点）。
 - 优先级表达实时性差异，不是重要性：
 
 | 任务 | 优先级 | 说明 |
@@ -483,6 +518,7 @@ APP 任务：QueueReceive / SemaphoreTake（阻塞等待）
 - 高优先级任务必须会阻塞，否则低优先级任务饿死。
 - 周期任务用 `port::DelayUntil` / `vTaskDelayUntil` 的等价物，不要用
   `Delay` 累积漂移；不要忙等，不要在任务里用厂商 `HAL_Delay`。
+- 小 RAM 平台先做任务预算：减少任务数、共享 timer/主循环，再谈优先级。
 - **栈大小**：
   - 单位以平台契约为准；`port::TaskOptions.stack_bytes` 统一用**字节**，
     由平台实现换算（ESP-IDF 直接用，原生 FreeRTOS 除以 `sizeof(StackType_t)`）。
@@ -530,6 +566,7 @@ APP 任务：QueueReceive / SemaphoreTake（阻塞等待）
    定时器，避免每个实例一个任务栈。判断方法、成本对比和按键采样案例见
    `references/timer-vs-task.md`。
 
+- APP/BSP 不直接调用 `xTimerCreate`；统一走 `port::CreateTimer/Start/Stop/Reset/DeleteTimer`。
 - 软件定时器回调只投递，不阻塞、不等队列、不写 Flash、不 stop/free。
 - 区分 FreeRTOS software timer 与厂商 timer：
   - FreeRTOS timer 回调运行在定时器任务；
@@ -546,6 +583,10 @@ APP 任务：QueueReceive / SemaphoreTake（阻塞等待）
 | PSRAM / DMA 缓冲 | 平台 memory capability | 按平台 API 指定 |
 | 频繁创建/销毁 | 预分配池 + 位图 | 与平台无关 |
 
+> 本 skill 的 `port` 模板只覆盖动态创建。静态分配必须在平台 port 中按 SDK 语义
+> 扩展 `xTaskCreateStatic` / `xQueueCreateStatic` / `xTimerCreateStatic`，并在
+> 平台契约中记录缓冲区类型、对齐要求和栈单位（word 还是 byte）。
+
 无论哪种策略：
 
 1. 不在 ISR 里分配；
@@ -560,6 +601,18 @@ C++ 侧注意：
 - `volatile` 不是原子操作；不要写 `++volatile_var`（C++20 已废弃）。
   计数用 `std::atomic`、临界区或任务内单写者。
 - 大字体表/常量表用 `constexpr` 放 flash，不要放 RAM。
+
+### 堆 / STL / `std::function` 策略
+
+| 平台 | 允许 | 限制 |
+| --- | --- | --- |
+| ESP32 / RAM 充足 | `std::string`、`std::map`、`std::function`（任务上下文） | 不在 ISR/高频路径使用；检查分配失败；热路径用固定缓冲/池 |
+| STM32 / RAM 紧张 | 固定数组、`etl` 容器、函数指针 + `void*` context | 避免捕获式 `std::function`、频繁 `std::string`、运行期容器增删 |
+| 所有平台 | 静态表、`constexpr` 常量 | 不在 ISR 分配；不在回调里做大块 JSON/字符串拼接 |
+
+`std::function` 可能因捕获而分配；`std::string`/`std::map` 也可能分配。
+如果平台契约要求“无运行期 malloc”，这些接口必须替换为函数指针 + context
+或固定容量容器，并在模块矩阵中记录。
 
 ## 11. 失败、降级与可观测性
 
@@ -632,6 +685,8 @@ INIT → PROVISIONING → WIFI_CONNECTED → MQTT_CONNECTING → ONLINE
 | `while (!flag) {}` 忙等 | 阻塞在队列/信号量/通知 |
 | 定时器回调里阻塞 | 只投递 |
 | 每个低频轮询实例（按键/LED）都建一个任务 | 共享软件定时器（回调只投递） |
+| 在 ISR/热路径使用捕获式 `std::function` 或频繁 `std::string` | 函数指针 + context、固定缓冲、池化 |
+| 实现层头文件放在公共 `include/` 给 app 用 | 放 `src/` + `PRIV_INCLUDE_DIRS`，只暴露接口 |
 | ISR 里拿互斥量 | 不可能；用队列/短临界区 |
 | `devices/` 里 include RTOS/厂商头 | 保持纯抽象 |
 | 运行期反复 create/delete/new | init 阶段创建一次 |
@@ -648,6 +703,8 @@ INIT → PROVISIONING → WIFI_CONNECTED → MQTT_CONNECTING → ONLINE
 - [ ] 构建系统已强制依赖方向；临时 include 不允许的层会编译失败
 - [ ] DIP 模式下 app 不 include `bsp`/`Board.hpp`，Board 只暴露接口或 `BoardServices`
 - [ ] Hybrid 模式下逐模块列出依赖路径，没有同一模块双路径
+- [ ] 实现层没有公共头文件，或公共头只包含接口类型；BSP 实现头放 `src/` + `PRIV_INCLUDE_DIRS`
+- [ ] `references/module-matrix.md` 已填写模块路径、任务预算、分配策略
 - [ ] 平台契约已填写并记录到 `docs/platform.md`
 - [ ] 入口函数与调度器启动模型正确；没有重复启动调度器
 - [ ] 栈单位确认；`port` API 用 `stack_bytes`；栈大小经过高水位验证
@@ -657,16 +714,19 @@ INIT → PROVISIONING → WIFI_CONNECTED → MQTT_CONNECTING → ONLINE
 - [ ] 低频轮询实例已评估“任务 vs 共享软件定时器”，没有为每个实例单独建栈
 - [ ] `Application` 构造函数只建队列/注册回调，任务在 `Start()` 创建
 - [ ] `MainEventLoop()` 只派发中断事件与跨模块事件，handler 快速返回
-- [ ] 每个 APP 自持队列与任务，公有 API 都是“投递后返回”
-- [ ] APP 依赖全部构造注入，没有内部全局查找
+- [ ] 每个 APP/并发域自持队列与任务，公有 API 都是“投递后返回”
+- [ ] APP 依赖全部构造注入，没有内部全局查找；单例只出现在组合根
 - [ ] 队列满/发布失败/重连有计数，日志可观测
 - [ ] 初始化失败有明确策略；降级路径不会解引用空句柄
 - [ ] 时间基准确认（tick vs 墙钟），token/证书过期策略明确
 - [ ] 连接/配网/重连有唯一 owner，状态迁移可读，操作幂等
 - [ ] 离线数据策略明确，缓存有上限
 - [ ] I2C/SPI 事务有超时、总线锁/恢复策略；启动时 probe
-- [ ] 没有运行期 `new`/`malloc`/STL 容器反复增删
+- [ ] 没有运行期 `new`/`malloc`/STL 容器反复增删；`std::function`/`std::string` 的分配风险已评估
+- [ ] `port` 覆盖 timer/栈高水位/heap 诊断；静态分配策略已记录
 - [ ] 没有日志泄漏密码/token/密钥；`sdkconfig` 等敏感配置不入库
+- [ ] 产品级检查已过：OTA/分区、低功耗、看门狗、NVS 迁移、安全、离线缓存（见 `references/product-architecture.md`）
+- [ ] 有主机侧测试入口或 mock 方案；关键状态机有 HIL/台架测试清单
 - [ ] 无 `sdkconfig` 的全新构建、所有条件编译分支分别构建通过
 - [ ] `size`/分区余量、栈水位、启动日志 smoke test 通过
 
@@ -680,9 +740,12 @@ INIT → PROVISIONING → WIFI_CONNECTED → MQTT_CONNECTING → ONLINE
 | `references/stm32-cubemx.md` | STM32/CubeMX、HAL 时基、NVIC、静态分配、EIDE/Keil |
 | `references/callback-contexts.md` | ISR / 厂商事件 / 定时器 / 任务上下文矩阵与案例 |
 | `references/timer-vs-task.md` | 周期任务与软件定时器的选择依据、成本对比、按键采样案例 |
-| `templates/port/rtos_port.hpp` | 统一 port 接口（任务/队列/信号量/临界区/时间） |
+| `references/module-matrix.md` | Hybrid/DIP 逐模块依赖、任务预算、分配策略模板 |
+| `references/product-architecture.md` | OTA/低功耗/看门狗/NVS 迁移/安全/离线缓存检查清单 |
+| `templates/port/rtos_port.hpp` | 统一 port 接口（任务/队列/信号量/定时器/临界区/时间/诊断） |
 | `templates/esp-idf/` | ESP-IDF port 实现、`app_main`、组件 CMake、Kconfig、分区 |
 | `templates/stm32/` | 原生 FreeRTOS port 实现、栈 word→byte 换算、FreeRTOSConfig 说明 |
+| `templates/host-test/` | 主机侧测试与 mock 目录骨架 |
 | `checklists/bring-up.md` | 硬件与固件 bring-up 检查清单 |
 | `examples/sensor-to-cloud/README.md` | 采集→滤波→显示→MQTT 的完整案例映射 |
 

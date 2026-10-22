@@ -29,6 +29,11 @@ xTaskCreate(entry, "task", 4096, arg, 4, &handle);  // 4096 bytes
 `uxTaskGetStackHighWaterMark()` 也返回 **byte**。代码里统一使用
 `port::TaskOptions.stack_bytes`，平台实现直接传给 `xTaskCreate`。
 
+`templates/esp-idf/port/rtos_port.cpp` 还提供 `CreateTimer/Start/Stop/Reset/DeleteTimer`
+以及 `GetStackHighWaterMark`、`GetFreeHeap`、`GetMinimumEverFreeHeap`。
+定时器回调通过 trampoline 转成 `TimerEntry(void*)`，运行在 FreeRTOS timer task，
+只能投递，不能阻塞或 stop/free 其他资源。
+
 ## 3. 组件与构建
 
 ### 组件结构

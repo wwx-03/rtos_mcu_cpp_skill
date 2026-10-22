@@ -1,11 +1,34 @@
 #include "port/rtos_port.hpp"
 
+#include <new>
+
 #include "FreeRTOS.h"
 #include "queue.h"
 #include "semphr.h"
 #include "task.h"
+#include "timers.h"
 
 namespace port {
+
+namespace {
+
+struct TimerBinding {
+	TimerEntry entry;
+	void *arg;
+};
+
+void TimerTrampoline(TimerHandle_t timer) {
+	auto *binding = static_cast<TimerBinding *>(pvTimerGetTimerID(timer));
+	if (binding != nullptr && binding->entry != nullptr) {
+		binding->entry(binding->arg);
+	}
+}
+
+TickType_t ToTicks(uint32_t timeout_ms) {
+	return timeout_ms == kWaitForever ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+}
+
+}  // namespace
 
 bool CreateTask(TaskEntry entry, const TaskOptions &options, TaskHandle *out) {
 	if (out == nullptr || options.name == nullptr || options.stack_bytes == 0) {
@@ -42,7 +65,7 @@ bool QueueSend(QueueHandle queue, const void *item, uint32_t timeout_ms) {
 	if (queue == nullptr || item == nullptr) {
 		return false;
 	}
-	return xQueueSend(static_cast<QueueHandle_t>(queue), item, pdMS_TO_TICKS(timeout_ms)) == pdPASS;
+	return xQueueSend(static_cast<QueueHandle_t>(queue), item, ToTicks(timeout_ms)) == pdPASS;
 }
 
 bool QueueSendFromIsr(QueueHandle queue, const void *item, bool *woken) {
@@ -59,7 +82,7 @@ bool QueueReceive(QueueHandle queue, void *item, uint32_t timeout_ms) {
 	if (queue == nullptr || item == nullptr) {
 		return false;
 	}
-	return xQueueReceive(static_cast<QueueHandle_t>(queue), item, pdMS_TO_TICKS(timeout_ms)) == pdPASS;
+	return xQueueReceive(static_cast<QueueHandle_t>(queue), item, ToTicks(timeout_ms)) == pdPASS;
 }
 
 bool CreateBinarySemaphore(SemaphoreHandle *out) {
@@ -84,7 +107,7 @@ bool SemaphoreTake(SemaphoreHandle semaphore, uint32_t timeout_ms) {
 	if (semaphore == nullptr) {
 		return false;
 	}
-	return xSemaphoreTake(static_cast<SemaphoreHandle_t>(semaphore), pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+	return xSemaphoreTake(static_cast<SemaphoreHandle_t>(semaphore), ToTicks(timeout_ms)) == pdTRUE;
 }
 
 bool SemaphoreGive(SemaphoreHandle semaphore) {
@@ -122,7 +145,64 @@ bool TaskNotifyGiveFromIsr(TaskHandle task, bool *woken) {
 }
 
 bool TaskNotifyTake(uint32_t timeout_ms) {
-	return ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(timeout_ms)) > 0;
+	return ulTaskNotifyTake(pdTRUE, ToTicks(timeout_ms)) > 0;
+}
+
+bool CreateTimer(TimerEntry entry, const TimerOptions &options, TimerHandle *out) {
+	if (out == nullptr || entry == nullptr || options.name == nullptr || options.period_ms == 0) {
+		return false;
+	}
+
+	// binding 在 init 阶段分配；若平台禁止 heap，改用固定大小静态池。
+	auto *binding = new (std::nothrow) TimerBinding{entry, options.arg};
+	if (binding == nullptr) {
+		return false;
+	}
+
+	const TimerHandle_t handle = xTimerCreate(options.name, pdMS_TO_TICKS(options.period_ms),
+		options.auto_reload ? pdTRUE : pdFALSE, binding, TimerTrampoline);
+	if (handle == nullptr) {
+		delete binding;
+		*out = nullptr;
+		return false;
+	}
+
+	*out = static_cast<TimerHandle>(handle);
+	return true;
+}
+
+bool StartTimer(TimerHandle timer, uint32_t delay_ms) {
+	if (timer == nullptr) {
+		return false;
+	}
+	return xTimerStart(static_cast<TimerHandle_t>(timer), ToTicks(delay_ms)) == pdPASS;
+}
+
+bool StopTimer(TimerHandle timer, uint32_t wait_ms) {
+	if (timer == nullptr) {
+		return false;
+	}
+	return xTimerStop(static_cast<TimerHandle_t>(timer), ToTicks(wait_ms)) == pdPASS;
+}
+
+bool ResetTimer(TimerHandle timer, uint32_t delay_ms) {
+	if (timer == nullptr) {
+		return false;
+	}
+	return xTimerReset(static_cast<TimerHandle_t>(timer), ToTicks(delay_ms)) == pdPASS;
+}
+
+bool DeleteTimer(TimerHandle timer, uint32_t wait_ms) {
+	if (timer == nullptr) {
+		return false;
+	}
+	auto *handle = static_cast<TimerHandle_t>(timer);
+	auto *binding = static_cast<TimerBinding *>(pvTimerGetTimerID(handle));
+	const BaseType_t ok = xTimerDelete(handle, ToTicks(wait_ms));
+	if (ok == pdPASS) {
+		delete binding;
+	}
+	return ok == pdPASS;
 }
 
 void EnterCritical() {
@@ -162,6 +242,30 @@ void DelayUntil(uint32_t *last_wake_ms, uint32_t period_ms) {
 	TickType_t last_wake_tick = pdMS_TO_TICKS(*last_wake_ms);
 	xTaskDelayUntil(&last_wake_tick, period_ticks);
 	*last_wake_ms = static_cast<uint32_t>(last_wake_tick) * portTICK_PERIOD_MS;
+}
+
+uint32_t GetStackHighWaterMark(TaskHandle task) {
+	// 原生 FreeRTOS 返回 word，这里统一换算为字节。
+	return static_cast<uint32_t>(uxTaskGetStackHighWaterMark(static_cast<TaskHandle_t>(task)))
+		* sizeof(StackType_t);
+}
+
+// heap_1/heap_2 等实现可能不提供 free/minimum-ever 统计；
+// 按实际使用的 heap_*.c 裁剪，或返回 0。
+uint32_t GetFreeHeap() {
+#if (configSUPPORT_DYNAMIC_ALLOCATION == 1)
+	return static_cast<uint32_t>(xPortGetFreeHeapSize());
+#else
+	return 0;
+#endif
+}
+
+uint32_t GetMinimumEverFreeHeap() {
+#if (configSUPPORT_DYNAMIC_ALLOCATION == 1)
+	return static_cast<uint32_t>(xPortGetMinimumEverFreeHeapSize());
+#else
+	return 0;
+#endif
 }
 
 }  // namespace port

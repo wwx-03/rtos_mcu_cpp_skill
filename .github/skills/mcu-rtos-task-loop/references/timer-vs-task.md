@@ -65,6 +65,11 @@ bool Button::Start() {
 	return port::StartTimer(timer_, 0);
 }
 
+// templates/port/rtos_port.hpp 提供 Create/Start/Stop/Reset/DeleteTimer。
+// StartTimer/ResetTimer 的 delay 是命令阻塞等待时间，不是新周期；
+// 需要改周期时重新创建 timer，或在平台 port 增加 ChangeTimerPeriod。
+// DeleteTimer 的 wait_ms 是删除命令等待时间，清理 binding 时不要提前释放。
+
 // 定时器任务上下文：只比较状态并投递，绝不阻塞
 void Button::OnTick(void* ctx) {
 	auto* self = static_cast<Button*>(ctx);

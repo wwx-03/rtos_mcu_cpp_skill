@@ -9,6 +9,8 @@
 > 4. 平台差异只允许出现在 `port/`，不要散落在 `app/`。
 > 5. 架构模式（Layered / DIP / Hybrid）必须选定并写入契约，且由构建系统强制；
 >    只在文档里写分层不算完成。
+> 6. Hybrid 的“逐模块依赖”不能只靠组件级 `REQUIRES` 强制；必须让实现层不暴露
+>    公共头，或把模块拆成独立组件。例外写入模块矩阵。
 
 ## 1. 模板
 
@@ -32,6 +34,9 @@
 - 具体板实现文件（DIP/Hybrid）：`bsp/<board>_board.cpp`（类只在 .cpp 内定义）
 - 参与编译的板级 .cpp 数量：1（多个 → 链接期重复符号）
 - 构建约束：app 不允许 include 的层；CMake（或等价机制）如何强制
+- 实现层是否暴露公共头：是 / 否；否 → 头文件位置与 `PRIV_INCLUDE_DIRS`
+- 模块矩阵文件：`docs/module-matrix.md`
+- Hybrid 例外：哪些简单模块允许 app 直接 include bsp
 
 ## 启动与调度
 - 入口函数：main() / app_main() / 其他：
@@ -47,6 +52,15 @@
 - 静态分配是否支持：
 - 空闲任务/定时器任务内存回调是否必需：
 - 任务优先级范围：
+- 任务预算表（任务数/栈/周期/阻塞点）：
+- `port` 是否提供 timer / 栈高水位 / heap 诊断：
+
+## 分配与 C++
+- 运行期是否允许 new/malloc：
+- `std::function` / `std::string` / STL 容器策略：
+- 异常/RTTI：开启 / 关闭
+- 分配失败策略：abort / 降级 / 重试
+- 静态分配扩展：类型、对齐、栈单位
 
 ## 中断与并发
 - ISR 投递 API：
@@ -75,6 +89,8 @@
 - 全新构建命令：
 - size/分区检查命令：
 - 启动 smoke test：
+- 主机侧测试入口 / mock 策略：
+- 产品级检查（OTA/低功耗/看门狗/NVS/安全）：见 `references/product-architecture.md`
 ```
 
 ## 2. 架构模式选择（生成代码前）
@@ -100,9 +116,11 @@
 
 模式与依赖：
 
-- **Layered**：`app → bsp → devices → port`；app 依赖 bsp，devices 是 bsp 私有实现。
+- **Layered**：`app → bsp → devices`；`app`/`bsp` 使用 `port`，`devices` 不依赖 port/RTOS；app 依赖 bsp，devices 是 bsp 私有实现。
 - **DIP**：`app → devices/services ← bsp`；board 是组合根；app 不得 include bsp/Board。
 - **Hybrid**：复杂/易变模块走接口，简单模块用具体类；逐模块记录依赖路径。
+  注意组件级 `REQUIRES bsp` 会暴露全部 BSP 公共头，逐模块约束要靠“实现层无公共头”
+  或“模块独立组件”落地，并把例外写入 `docs/module-matrix.md`。
 
 Board 形态（DIP/Hybrid 必填）：
 

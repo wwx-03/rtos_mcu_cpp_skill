@@ -14,6 +14,11 @@ MCU 厂商、SDK 版本、栈单位、ISR 规则等会随平台变化的内容�
 
 而不是每次重新发明任务划分，或者把 STM32 的经验直接套到 ESP-IDF 上。
 
+> **范围说明**：本 skill 的重点是 RTOS 并发、回调上下文、任务/队列和分层纪律，
+> 不是完整的量产产品架构方法论。OTA/分区、低功耗、看门狗、NVS 迁移、安全、
+> 离线缓存等见 `references/product-architecture.md`；逐模块依赖和任务预算见
+> `references/module-matrix.md`。
+
 ## 核心约束
 
 1. **中断只做三件事，并且只走 ISR 安全 API**
@@ -30,10 +35,21 @@ MCU 厂商、SDK 版本、栈单位、ISR 规则等会随平台变化的内容�
 组织规则：
 
 - `Application` 持有主事件队列，用 `MainEventLoop()` 统一派发**中断事件与跨模块事件**；
-- **每个 APP 类自己持有队列和任务**，对外只暴露异步 API；
+- **每个 APP/并发域自己持有队列和任务**，对外只暴露异步 API；
 - 依赖在构造时由 `Board` 注入；
 - **先选定 Layered / DIP / Hybrid 架构模式**，并用构建系统强制依赖方向；
 - **`Application::Start()` 只创建任务，不启动调度器**；启动调度器是平台入口的职责。
+
+### 已知边界
+
+- **Hybrid 不能只靠组件级 `REQUIRES` 强制逐模块依赖**：一旦 app `REQUIRES bsp`，
+  app 就能 include bsp 全部公共头。要真正强制，必须让实现层不暴露公共头
+  （头文件放 `src/` + `PRIV_INCLUDE_DIRS`），或拆成独立组件。
+- **静态分配是平台扩展**：`port` 模板只覆盖动态创建；小 RAM 平台需在平台 port
+  中按 SDK 语义实现 `xTaskCreateStatic` / `xQueueCreateStatic`，并记录栈单位。
+- **`std::function` / `std::string` / STL 可能分配**：RAM 紧张平台应改用函数指针 +
+  context、固定缓冲或 `etl` 容器；具体策略见 SKILL.md 的“堆 / STL 策略”。
+- **单例只用于组合根**：`Board::GetInstance()` 不进入业务逻辑；测试构建应能注入假实现。
 
 ## 平台契约（关键新增）
 
@@ -48,7 +64,9 @@ MCU 厂商、SDK 版本、栈单位、ISR 规则等会随平台变化的内容�
 - ISR 投递 API 与中断优先级约束；
 - 临界区是否跨核；
 - 定时器 / 厂商事件回调的上下文；
-- 构建系统与分区限制。
+- 静态/动态分配与堆/STL 策略；
+- 构建系统与分区限制；
+- 模块矩阵（接口/实现/任务/队列/分配/生命周期）。
 
 > 不确定就查 SDK 头文件/文档，不许猜。
 
@@ -63,11 +81,14 @@ MCU 厂商、SDK 版本、栈单位、ISR 规则等会随平台变化的内容�
 │   ├── esp-idf.md                   # ESP-IDF 启动、组件、IDF 6 迁移
 │   ├── stm32-cubemx.md              # STM32/CubeMX、HAL、NVIC、EIDE/Keil
 │   ├── callback-contexts.md         # ISR / 厂商事件 / 定时器 / 任务上下文
-│   └── timer-vs-task.md             # 周期任务 vs 软件定时器（决策与案例）
+│   ├── timer-vs-task.md             # 周期任务 vs 软件定时器（决策与案例）
+│   ├── module-matrix.md             # Hybrid/DIP 模块路径与任务预算模板
+│   └── product-architecture.md      # OTA/低功耗/看门狗/NVS/安全清单
 ├── templates/
 │   ├── port/rtos_port.hpp           # 统一 port 接口（stack_bytes 等）
 │   ├── esp-idf/                     # port 实现、app_main、CMake、Kconfig、分区
-│   └── stm32/                       # 原生 FreeRTOS port、启动模板、配置说明
+│   ├── stm32/                       # 原生 FreeRTOS port、启动模板、配置说明
+│   └── host-test/                   # 主机侧测试与 mock 目录骨架
 ├── checklists/bring-up.md           # 硬件与固件 bring-up 检查清单
 └── examples/sensor-to-cloud/        # 采集→滤波→显示→MQTT 案例
 ```
@@ -136,6 +157,9 @@ STM32F407 + FreeRTOS，把这个裸机工程改成 中断 → 队列 → 任务 
 | ISR → 任务链路、回调上下文 | `SKILL.md` + `references/callback-contexts.md` |
 | 任务、栈、同步原语、临界区、共享总线 | `SKILL.md` |
 | 周期任务 vs 软件定时器（按键采样） | `references/timer-vs-task.md` |
+| 逐模块依赖与任务预算 | `references/module-matrix.md` |
+| 产品级架构（OTA/低功耗/看门狗/NVS/安全） | `references/product-architecture.md` |
+| 主机侧测试与 mock | `templates/host-test/` |
 | 失败降级、可观测性、时间、连接状态机 | `SKILL.md` |
 | 平台契约与查证方法 | `references/platform-profile.md` |
 | FreeRTOS / ESP-IDF / CMSIS 语义差异 | `references/freertos-port-semantics.md` |
@@ -151,7 +175,12 @@ STM32F407 + FreeRTOS，把这个裸机工程改成 中断 → 队列 → 任务 
 
 - [ ] 架构模式已选定并记录；构建系统已强制依赖方向
 - [ ] 临时 include 不允许的层会编译失败（分层约束真实生效）
+- [ ] Hybrid/DIP 实现层无公共头，或公共头只包含接口类型
+- [ ] `references/module-matrix.md` 已填写，任务预算与分配策略明确
 - [ ] 平台契约已填写，入口/调度器/栈单位/中断语义已确认
+- [ ] `port` 覆盖 timer/栈高水位/heap 诊断；静态分配策略已记录
+- [ ] `std::function`/STL 分配风险已评估
+- [ ] 产品级检查（OTA/低功耗/看门狗/NVS/安全）已完成
 - [ ] `Application::Start()` 没有启动调度器
 - [ ] 栈大小按平台单位设置，并通过高水位验证
 - [ ] ISR 只投递并处理 woken；厂商事件回调里没有 stop/free/阻塞
