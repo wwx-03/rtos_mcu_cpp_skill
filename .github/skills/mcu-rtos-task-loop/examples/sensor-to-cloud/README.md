@@ -7,12 +7,13 @@
 
 ```markdown
 - MCU：ESP32-C3（单核 RISC-V）
+- 架构模式：Hybrid（网络走 services 接口，显示/ADC 走 devices 接口）
 - RTOS：ESP-IDF FreeRTOS
 - SDK：ESP-IDF 6.x
 - 入口：app_main()，调度器已启动
 - 任务栈单位：byte
 - 栈高水位单位：byte
-- 分配：init 阶段动态创建，检查返回值
+- 分配：`Init()` 阶段动态创建，检查返回值
 - ISR：GPIO RDY 下降沿，xSemaphoreGiveFromISR
 - 临界区：单核关中断（C3）
 - 回调：WiFi/MQTT/SmartConfig 均为系统事件任务
@@ -28,13 +29,16 @@ components/
 │   ├── application.*     # MainEventLoop、主队列
 │   ├── water_monitor.*   # 周期采集 + 滤波 + 有效性
 │   ├── display.*         # OLED 渲染任务
-│   └── network.*         # WiFi/MQTT 状态与上报
+│   └── network.*         # 连接状态机与上报策略
+├── services/
+│   ├── network.hpp       # WiFi 连接/配网接口
+│   └── message_transport.hpp  # MQTT 发布接口
 ├── bsp/
 │   ├── board.*           # 单例、I2C 总线、依赖组装
 │   ├── ads1115_i2c.*     # RDY ISR + 单次转换 + OS 位兜底
 │   ├── ssd1306_panel.*   # esp_lcd SSD1306
-│   ├── wifi_station.*    # SmartConfig + 重连
-│   └── onenet_mqtt.*     # token + 发布
+│   ├── wifi_station.*    # 实现 services/network
+│   └── onenet_mqtt.*     # 实现 services/message_transport
 ├── devices/              # pH/浊度算法、ADC/显示抽象
 ├── utility/              # 中值滤波、定点格式化
 └── port/                 # 统一入口/栈单位/队列/临界区
@@ -52,7 +56,7 @@ WaterMonitor task
 Application::PostWaterQualityEvent
     ▼
 MainEventLoop
-    ├─► Display::ShowWaterQuality（异步）
+    ├─► Display::DrawWaterQuality（异步）
     └─► Network::Publish（异步）
              │
              ▼
@@ -83,11 +87,3 @@ MainEventLoop
    必须分压或改 5V 供电 + 电平转换；这是硬件契约，不是软件能修的。
 5. **初始化失败直接 abort**  
    改为 `ready_` + 降级，便于板上分步排查。
-
-## 6. 可复用结论
-
-- `Application` 只负责派发，不产生业务逻辑；
-- APP 之间只通过异步 API 交互；
-- 平台差异集中在 `port/`；
-- 回调只投递，重活交给任务；
-- 任何“未知语义”都先查 SDK，再写代码。

@@ -7,14 +7,15 @@
 ├── port/
 │   ├── include/port/rtos_port.hpp   <- templates/port/rtos_port.hpp
 │   └── src/rtos_port.cpp            <- templates/stm32/port/rtos_port.cpp
-├── Core/Src/main.c                  <- 参考 main_template.c 的启动顺序
+├── Core/Src/main.c                  <- 参考 main_template.cpp 的启动顺序（CubeMX 生成文件保留时用 extern "C" 包装）
 └── Core/Inc/FreeRTOSConfig.h        <- 参考 freertos_config_notes.md
 ```
 
 ## 关键约定
 
-- `port::TaskOptions.stack_bytes` 是**字节**；STM32 实现里除以
+- `port::TaskOptions.stack_bytes` 是**字节**；STM32 实现里向上取整除以
   `sizeof(StackType_t)` 转成 word。
+- 模板是动态创建版；`configSUPPORT_DYNAMIC_ALLOCATION = 0` 时需替换为 Static API。
 - `port::StartScheduler()` 调用 `vTaskStartScheduler()`；只在 `main()` 里调用一次。
 - HAL 时基改用 TIM，SysTick/PendSV/SVC 交给 FreeRTOS。
 - 调用 `...FromISR` 的中断，其 NVIC 抢占优先级数值要满足

@@ -85,7 +85,7 @@ static void WifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
 - 运行在 timer task；
 - 不能阻塞、不能等队列、不能写 Flash；
 - 只投递事件；
-- 删除/停止定时器本身可以在回调里做（按 API 允许），但不要在这里释放其他资源。
+- 回调里不 stop/delete 自身；需要停止时投递到任务，由任务调用 `StopTimer`/`DeleteTimer`。
 
 ### esp_timer
 
@@ -98,11 +98,20 @@ static void WifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
 `HAL_UART_RxCpltCallback`、`HAL_GPIO_EXTI_Callback` 等通常运行在 ISR 上下文：
 
 ```cpp
+// 组合根在 Init() 时注册；运行期只读，回调里不做全局查找
+namespace {
+Serial *s_usart1_serial = nullptr;
+}
+
+void RegisterUsart1Serial(Serial *serial) {
+	s_usart1_serial = serial;
+}
+
 extern "C" void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	if (huart->Instance != USART1) {
+	if (huart->Instance != USART1 || s_usart1_serial == nullptr) {
 		return;
 	}
-	Board::GetInstance().GetSerial()->HandleRxCpltEvent();   // 只上报
+	s_usart1_serial->HandleRxCpltEvent();   // 只上报
 }
 ```
 
@@ -118,6 +127,20 @@ void Serial::HandleRxCpltEvent() {
 
 不要在 HAL 回调里解析协议、打印、延时、拿互斥量。
 
+### Device 业务回调
+
+`Device::SetReceivedCallback()` 注册的是**业务回调**，设计上在任务上下文调用：
+
+```cpp
+// BSP 任务里（不是 ISR）
+device.NotifyReceived(size);
+```
+
+- ISR 只投递到 BSP 自己的队列/信号量；
+- BSP 任务读取数据后调用 `NotifyReceived()`；
+- Application 的回调只做 `PostDeviceReceived(size)`，不读寄存器、不解析协议；
+- 不要从 ISR 直接调用 `NotifyReceived()` 或 `Application::PostDeviceReceived()`。
+
 ## 6. APP 任务
 
 只有 APP 任务可以：
@@ -131,7 +154,7 @@ void Serial::HandleRxCpltEvent() {
 
 ## 7. 资源生命周期规则
 
-1. 资源只在 init/Start 阶段创建；
+1. 资源只在 `Init()` 创建，任务只在 `Start()` 创建；
 2. 运行期不 create/delete；
 3. 回调只“通知”，不“销毁”；
 4. 需要销毁时投递到拥有该资源的任务；

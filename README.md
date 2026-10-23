@@ -2,94 +2,47 @@
 
 面向 **RTOS MCU 工程**（FreeRTOS / CMSIS-RTOS2，Cortex-M / STM32 / ESP32 / 嵌入式 C++）的 Copilot Agent Skill。
 
-它的核心是**平台无关的 RTOS 设计约束**：中断、事件循环、APP 模块、任务与队列的职责边界。
-MCU 厂商、SDK 版本、栈单位、ISR 规则等会随平台变化的内容不写死在核心里，而是通过
-**「平台契约」+ `port/` 适配层 + references/templates** 解决。
+核心是三条：**先判层，再命名，再写并发。**
 
-目标是让 AI：
+- 判层：`devices`（器件）/ `services`（平台能力）/ `bsp`（实现）/ `app`（业务）/
+  `utility`（纯逻辑）/ `port`（RTOS 封装），默认 **Hybrid**；
+- 命名：目录、文件、类、方法、句柄、事件、生命周期都有唯一标准，
+  改造现有工程时新代码按标准走，不沿用错误命名；
+- 并发：中断只投递、`Application` 用 `MainEventLoop()` 派发、APP 只暴露异步 API、
+  依赖构造注入、平台差异只在 `port/`。
 
-1. 先识别目标 MCU/RTOS/SDK，确认平台语义；
-2. 生成统一的 `port/` 实现；
-3. 再按同一套结构生成 `app / bsp / devices / utility`。
-
-而不是每次重新发明任务划分，或者把 STM32 的经验直接套到 ESP-IDF 上。
-
-> **范围说明**：本 skill 的重点是 RTOS 并发、回调上下文、任务/队列和分层纪律，
-> 不是完整的量产产品架构方法论。OTA/分区、低功耗、看门狗、NVS 迁移、安全、
-> 离线缓存等见 `references/product-architecture.md`；逐模块依赖和任务预算见
-> `references/module-matrix.md`。
-
-## 核心约束
-
-1. **中断只做三件事，并且只走 ISR 安全 API**
-   清标志、搬数据、投递（`port::QueueSendFromIsr` / `port::SemaphoreGiveFromIsr`），
-   最后处理 woken 并调用 `port::YieldFromIsr(woken)`。
-   ISR 里不打印、不延时、不阻塞、不拿互斥量、不分配内存。
-2. **资源只在初始化阶段创建一次**
-   任务 / 队列 / 信号量 / 定时器在 `Start()` 路径创建，运行期不 create/delete。
-   小 RAM 平台优先静态分配；大 RAM 平台可在 init 阶段动态创建，但必须检查返回值。
-3. **共享数据只用 RTOS 原语**
-   任务间传数据用队列；保护资源用互斥量（只能在任务里获取）；
-   只有极短的临界区才用 `port::EnterCritical()`，且要确认单核/双核语义。
-
-组织规则：
-
-- `Application` 持有主事件队列，用 `MainEventLoop()` 统一派发**中断事件与跨模块事件**；
-- **每个 APP/并发域自己持有队列和任务**，对外只暴露异步 API；
-- 依赖在构造时由 `Board` 注入；
-- **先选定 Layered / DIP / Hybrid 架构模式**，并用构建系统强制依赖方向；
-- **`Application::Start()` 只创建任务，不启动调度器**；启动调度器是平台入口的职责。
-
-### 已知边界
-
-- **Hybrid 不能只靠组件级 `REQUIRES` 强制逐模块依赖**：一旦 app `REQUIRES bsp`，
-  app 就能 include bsp 全部公共头。要真正强制，必须让实现层不暴露公共头
-  （头文件放 `src/` + `PRIV_INCLUDE_DIRS`），或拆成独立组件。
-- **静态分配是平台扩展**：`port` 模板只覆盖动态创建；小 RAM 平台需在平台 port
-  中按 SDK 语义实现 `xTaskCreateStatic` / `xQueueCreateStatic`，并记录栈单位。
-- **`std::function` / `std::string` / STL 可能分配**：RAM 紧张平台应改用函数指针 +
-  context、固定缓冲或 `etl` 容器；具体策略见 SKILL.md 的“堆 / STL 策略”。
-- **单例只用于组合根**：`Board::GetInstance()` 不进入业务逻辑；测试构建应能注入假实现。
-
-## 平台契约（关键新增）
-
-生成代码前必须先填写 `references/platform-profile.md`，至少确认：
-
-- 架构模式（Layered / DIP / Hybrid）与选择理由；
-- app 可见的抽象层（bsp 还是 devices/services）以及构建系统如何强制；
-- 入口函数与调度器是否已启动；
-- `xTaskCreate` / `xTaskCreateStatic` 的栈单位（byte / word）；
-- 栈高水位返回值单位；
-- 静态/动态分配支持；
-- ISR 投递 API 与中断优先级约束；
-- 临界区是否跨核；
-- 定时器 / 厂商事件回调的上下文；
-- 静态/动态分配与堆/STL 策略；
-- 构建系统与分区限制；
-- 模块矩阵（接口/实现/任务/队列/分配/生命周期）。
-
-> 不确定就查 SDK 头文件/文档，不许猜。
+平台差异（栈单位、ISR 规则、回调上下文、构建系统）通过
+**「平台契约」+ `port/` 适配层 + `references/`** 解决，不写死在核心里。
 
 ## 目录结构
 
 ```text
 .github/skills/mcu-rtos-task-loop/
-├── SKILL.md                         # 平台无关核心
+├── SKILL.md                         # 平台无关核心（不变量 / 流程 / 命名 / 输出契约）
 ├── references/
+│   ├── layers-and-naming.md         # 分层判据、模块归类、命名与风格标准
+│   ├── project-workflow.md           # 按这套模式写工程的落地步骤
+│   ├── architecture.md              # Layered / DIP / Hybrid、Board 形态、构建强制
+│   ├── concurrency-rules.md         # 任务/队列/优先级/同步原语/生命周期
 │   ├── platform-profile.md          # 平台契约模板与查证方法
 │   ├── freertos-port-semantics.md   # FreeRTOS / ESP-IDF / CMSIS 语义差异
 │   ├── esp-idf.md                   # ESP-IDF 启动、组件、IDF 6 迁移
 │   ├── stm32-cubemx.md              # STM32/CubeMX、HAL、NVIC、EIDE/Keil
 │   ├── callback-contexts.md         # ISR / 厂商事件 / 定时器 / 任务上下文
-│   ├── timer-vs-task.md             # 周期任务 vs 软件定时器（决策与案例）
-│   ├── module-matrix.md             # Hybrid/DIP 模块路径与任务预算模板
+│   ├── timer-vs-task.md             # 周期任务 vs 软件定时器
+│   ├── memory-and-stl.md            # 分配策略、STL / std::function 风险
+│   ├── runtime-policies.md          # 失败降级、可观测性、时间、连接状态机
+│   ├── module-matrix.md             # 逐模块层级、依赖与任务预算
 │   └── product-architecture.md      # OTA/低功耗/看门狗/NVS/安全清单
 ├── templates/
 │   ├── port/rtos_port.hpp           # 统一 port 接口（stack_bytes 等）
+│   ├── app/                         # 静态/动态 Application + Display 模板（二选一）
+│   ├── devices/                     # Board / Device / DisplayPanel 纯接口
 │   ├── esp-idf/                     # port 实现、app_main、CMake、Kconfig、分区
 │   ├── stm32/                       # 原生 FreeRTOS port、启动模板、配置说明
+│   ├── style/                       # .clang-format / .editorconfig
 │   └── host-test/                   # 主机侧测试与 mock 目录骨架
-├── checklists/bring-up.md           # 硬件与固件 bring-up 检查清单
+├── checklists/bring-up.md           # 唯一一份验收清单
 └── examples/sensor-to-cloud/        # 采集→滤波→显示→MQTT 案例
 ```
 
@@ -113,13 +66,12 @@ MCU 厂商、SDK 版本、栈单位、ISR 规则等会随平台变化的内容�
 
 ### 个人级
 
-放到用户目录下的 Copilot skills 目录：
-
 ```text
 ~/.copilot/skills/mcu-rtos-task-loop/
 ```
 
-`references/`、`templates/`、`checklists/` 要和 `SKILL.md` 一起复制；只复制 `SKILL.md` 会丢失平台契约与模板。
+`references/`、`templates/`、`checklists/` 要和 `SKILL.md` 一起复制；只复制 `SKILL.md`
+会丢失平台契约、命名标准与模板。
 
 ## 使用
 
@@ -134,61 +86,40 @@ STM32F407 + FreeRTOS，把这个裸机工程改成 中断 → 队列 → 任务 
 ```
 
 ```text
-帮我审查这个工程的 ISR、事件循环、任务和内存分配，并把平台契约补全
+帮我审查这个工程的 ISR、事件循环、分层和命名，按 skill 标准给偏差清单
 ```
 
 推荐流程：
 
-1. AI 识别 MCU/RTOS/SDK，并选择 Layered / DIP / Hybrid 架构模式；
-2. 填写 `references/platform-profile.md`（含架构模式与构建约束）；
-3. AI 先实现 `templates/` 里的 `port/`；
-4. 按选定模式生成 `app / bsp / devices / services / utility`；
-5. 按 `checklists/bring-up.md` 做语义与构建检查。
+1. AI 识别 MCU/RTOS/SDK，按 `references/layers-and-naming.md` 判定每个模块的层；
+2. 填写 `references/platform-profile.md`（20 项）与 `references/module-matrix.md`；
+3. 先实现 `templates/` 里的 `port/`，再依次生成 `devices/services` 接口、`bsp` 实现、`app`；
+4. 按 `checklists/bring-up.md` 做语义与构建检查。
 
 ## 覆盖内容
 
 | 主题 | 位置 |
 | --- | --- |
-| Layered / DIP / Hybrid 架构模式选择 | `SKILL.md` §2 |
-| 分层、依赖方向、Board 注入 | `SKILL.md` |
-| 架构模式与构建约束记录 | `references/platform-profile.md` |
+| 分层判据、模块归类、常见误判 | `references/layers-and-naming.md` |
+| 按这套模式写工程的落地步骤 | `references/project-workflow.md` |
+| 命名、风格、改造现有工程规则 | `references/layers-and-naming.md` |
+| 格式落地（clang-format / editorconfig） | `references/layers-and-naming.md` §6 + `templates/style/` |
+| Layered / DIP / Hybrid 与构建强制 | `references/architecture.md` |
+| 中断 → 任务链路、回调上下文 | `SKILL.md` + `references/callback-contexts.md` |
 | Application / MainEventLoop / 启动时序 | `SKILL.md` |
-| APP 异步 API、队列与载荷策略 | `SKILL.md` |
-| ISR → 任务链路、回调上下文 | `SKILL.md` + `references/callback-contexts.md` |
-| 任务、栈、同步原语、临界区、共享总线 | `SKILL.md` |
-| 周期任务 vs 软件定时器（按键采样） | `references/timer-vs-task.md` |
-| 逐模块依赖与任务预算 | `references/module-matrix.md` |
-| 产品级架构（OTA/低功耗/看门狗/NVS/安全） | `references/product-architecture.md` |
-| 主机侧测试与 mock | `templates/host-test/` |
-| 失败降级、可观测性、时间、连接状态机 | `SKILL.md` |
+| APP 异步 API、队列与载荷策略 | `SKILL.md` + `references/concurrency-rules.md` |
+| 任务、栈、同步原语、临界区 | `references/concurrency-rules.md` + `references/freertos-port-semantics.md` |
+| 周期任务 vs 软件定时器 | `references/timer-vs-task.md` |
+| 内存分配、STL / `std::function` 策略 | `references/memory-and-stl.md` |
+| 失败降级、可观测性、时间、连接状态机 | `references/runtime-policies.md` |
 | 平台契约与查证方法 | `references/platform-profile.md` |
-| FreeRTOS / ESP-IDF / CMSIS 语义差异 | `references/freertos-port-semantics.md` |
 | ESP-IDF 6 启动、组件、API 迁移 | `references/esp-idf.md` |
 | STM32/CubeMX、HAL、NVIC、EIDE/Keil | `references/stm32-cubemx.md` |
+| 产品级架构（OTA/低功耗/看门狗/NVS/安全） | `references/product-architecture.md` |
+| 主机侧测试与 mock | `templates/host-test/` |
+| 静态/动态 Application + Display 模板 | `templates/app/` |
 | 代码模板 | `templates/` |
-| Bring-up 检查 | `checklists/bring-up.md` |
-| 完整案例 | `examples/sensor-to-cloud/` |
-
-## 验证
-
-改完工程后按 `checklists/bring-up.md` 逐条核对，关键几条：
-
-- [ ] 架构模式已选定并记录；构建系统已强制依赖方向
-- [ ] 临时 include 不允许的层会编译失败（分层约束真实生效）
-- [ ] Hybrid/DIP 实现层无公共头，或公共头只包含接口类型
-- [ ] `references/module-matrix.md` 已填写，任务预算与分配策略明确
-- [ ] 平台契约已填写，入口/调度器/栈单位/中断语义已确认
-- [ ] `port` 覆盖 timer/栈高水位/heap 诊断；静态分配策略已记录
-- [ ] `std::function`/STL 分配风险已评估
-- [ ] 产品级检查（OTA/低功耗/看门狗/NVS/安全）已完成
-- [ ] `Application::Start()` 没有启动调度器
-- [ ] 栈大小按平台单位设置，并通过高水位验证
-- [ ] ISR 只投递并处理 woken；厂商事件回调里没有 stop/free/阻塞
-- [ ] APP 公有 API 都是“投递后返回”
-- [ ] 连接/配网/重连有唯一 owner，离线策略明确
-- [ ] 初始化失败有降级/停机策略，`ready_` 标志有效
-- [ ] 无 sdkconfig 的全新构建、条件编译分支分别构建通过
-- [ ] `size`/分区余量、启动日志 smoke test 通过
+| 验收清单 | `checklists/bring-up.md` |
 
 ## 平台适配说明
 
@@ -201,7 +132,8 @@ STM32F407 + FreeRTOS，把这个裸机工程改成 中断 → 队列 → 任务 
 - 定时器/厂商事件回调上下文；
 - 构建系统、组件依赖、分区/内存限制。
 
-平台细节会随 SDK 版本变化。`references/` 中的内容是参考，不是永久真理；使用前请对照目标 SDK 的头文件与迁移指南。
+平台细节会随 SDK 版本变化。`references/` 中的内容是参考，不是永久真理；
+使用前请对照目标 SDK 的头文件与迁移指南。
 
 ## 许可
 

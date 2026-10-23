@@ -43,6 +43,7 @@
 - 调度器是否已启动：
 - 谁启动调度器：
 - Application::Start() 是否允许启动调度器：否
+- 资源创建 / 任务创建：Init() / Start()
 - 单例构造时机：
 
 ## 任务与栈
@@ -93,64 +94,9 @@
 - 产品级检查（OTA/低功耗/看门狗/NVS/安全）：见 `references/product-architecture.md`
 ```
 
-## 2. 架构模式选择（生成代码前）
+> 模式选择判据、目录、Board 形态与构建约束见 `references/architecture.md`。
 
-先选模式，再填其余契约。判据按优先级：
-
-1. **板卡/器件变体**：≥ 2 个板卡/MCU/器件变体，或计划替换器件 → DIP/Hybrid。
-2. **可测试性**：需要 mock/主机单测的模块 → DIP/Hybrid。
-3. **复杂度**：≥ 3 个复杂或易变模块 → Hybrid/DIP。
-4. **团队与生命周期**：多人并行、长期维护、频繁换代 → DIP/Hybrid。
-5. **ROM/RAM**：只作为约束/否决项，不是主判据。
-   - 极紧（例如 RAM < 32 KB 或 Flash < 128 KB）且无测试/多板需求 →
-     Layered/Hybrid，避免接口爆炸。
-   - 资源充足不等于必须 DIP；仍按 1~4 选择。
-   - 用 `size` / `arm-none-eabi-size`、栈高水位实测，不要凭 MCU 型号猜。
-
-| 场景 | 推荐 |
-| --- | --- |
-| 单板、单 MCU、固定器件、小团队、快速交付 | Layered |
-| 多板/多 MCU、器件可替换、需要单测/mock、长期维护 | DIP |
-| 复杂模块多，但简单器件更多 | Hybrid |
-| ROM/RAM 极紧且无测试/多板需求 | Layered/Hybrid |
-
-模式与依赖：
-
-- **Layered**：`app → bsp → devices`；`app`/`bsp` 使用 `port`，`devices` 不依赖 port/RTOS；app 依赖 bsp，devices 是 bsp 私有实现。
-- **DIP**：`app → devices/services ← bsp`；board 是组合根；app 不得 include bsp/Board。
-- **Hybrid**：复杂/易变模块走接口，简单模块用具体类；逐模块记录依赖路径。
-  注意组件级 `REQUIRES bsp` 会暴露全部 BSP 公共头，逐模块约束要靠“实现层无公共头”
-  或“模块独立组件”落地，并把例外写入 `docs/module-matrix.md`。
-
-Board 形态（DIP/Hybrid 必填）：
-
-- 抽象 `Board` 所在头：`devices/board.hpp`（只含 `GetXxx()`）
-- 具体板类名：`<MCU><BoardName><Version>Board`，例如 `Esp32SmartLockV01Board`
-- 具体板实现：只在 `bsp/<board>_board.cpp` 内定义，末尾 `IMPLEMENT_BOARD_CLASS(<BoardClass>)`
-- 选板方式：只编译一个板级 `.cpp`（多个 → 重复符号，缺失 → undefined reference）
-- 注入方式：`main()` 调用 `Application::Start(Board::GetInstance())`
-- 板级专用能力（喂狗/板号/自检）：留在具体板，或抽成独立服务接口
-
-构建约束示例（ESP-IDF）：
-
-```cmake
-# Layered
-idf_component_register(... REQUIRES bsp port)                    # app
-idf_component_register(... REQUIRES port PRIV_REQUIRES devices)  # bsp
-
-# DIP
-idf_component_register(... REQUIRES devices services port)          # app
-idf_component_register(... REQUIRES devices services port)          # bsp
-idf_component_register(... REQUIRES app bsp devices services port)  # main
-```
-
-验收：在 app 里临时 include 一个不允许的层，构建必须失败；
-如果仍能编译，说明依赖没有被真正约束。
-
-> DIP 模式下，`Board.hpp` 返回接口还不够：如果 app 仍 include `Board.hpp`，
-> app 仍然依赖 bsp。应由 `main()`/组合根把 `BoardServices` 或 `IBoard` 注入 `Application`。
-
-## 3. 逐项查证方法
+## 2. 逐项查证方法
 
 | 契约项 | 查什么 | 常见坑 |
 | --- | --- | --- |
@@ -166,52 +112,7 @@ idf_component_register(... REQUIRES app bsp devices services port)  # main
 | 厂商事件上下文 | WiFi/MQTT/协议栈文档 | 事件任务里做重活会阻塞整个协议栈 |
 | 构建 | SDK 示例、组件 CMake、链接脚本 | 组件依赖/分区不足会在链接或运行期才暴露 |
 
-## 4. 示例：ESP32-C3 + ESP-IDF 6.x
-
-```markdown
-- MCU / 芯片：ESP32-C3（单核 RISC-V）
-- RTOS / 版本：ESP-IDF FreeRTOS
-- SDK / 版本：ESP-IDF 6.0.x
-- 构建系统：idf.py / CMake / Ninja
-- 入口函数：app_main()
-- 调度器是否已启动：是
-- 谁启动调度器：ESP-IDF 启动代码
-- 任务创建 API：xTaskCreate / xTaskCreatePinnedToCore
-- 栈深单位：byte
-- 栈高水位单位：byte
-- 静态分配：支持，但大 RAM 平台通常动态创建
-- ISR 投递 API：xQueueSendFromISR / xSemaphoreGiveFromISR
-- ISR yield：portYIELD_FROM_ISR(woken)
-- 临界区语义：单核关中断；双核需 portMUX/原子
-- 定时器回调：esp_timer 默认任务上下文（dispatch 可配置）
-- 厂商事件：esp_event 默认事件任务；WiFi/MQTT/SmartConfig 回调均为任务上下文
-- include 约定：`#include "freertos/FreeRTOS.h"`
-- 组件依赖：`REQUIRES freertos`（IDF 6 必须显式声明）
-```
-
-## 5. 示例：STM32 + CubeMX + FreeRTOS
-
-```markdown
-- MCU / 芯片：STM32F4 / Cortex-M4F（单核）
-- RTOS / 版本：FreeRTOS（CubeMX 生成）
-- 入口函数：main()
-- 调度器是否已启动：否
-- 谁启动调度器：Application::Start() → port::StartScheduler()
-- 任务创建 API：xTaskCreate / xTaskCreateStatic
-- 栈深单位：word（StackType_t）
-- 栈高水位单位：word
-- 静态分配：小 RAM 平台建议开启
-- ISR 投递 API：xQueueSendFromISR / xSemaphoreGiveFromISR
-- ISR yield：portYIELD_FROM_ISR(woken)
-- 临界区语义：单核关中断（NVIC 优先级分组 4）
-- 定时器回调：FreeRTOS timer task
-- 厂商事件：HAL UART/EXTI 回调通常运行在 ISR 上下文
-- HAL 时基：改用 TIM，不要让 HAL 用 SysTick
-- 中断优先级：调用 FromISR 的中断抢占优先级数值 ≥
-  configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY
-```
-
-## 6. 红色告警
+## 3. 红色告警
 
 出现下面情况时，先停下来查文档，不要继续生成：
 

@@ -8,7 +8,7 @@
 | `configMAX_PRIORITIES` | `7` | 够用 |
 | `configMINIMAL_STACK_SIZE` | `128` | 空闲任务栈（word） |
 | `configSUPPORT_STATIC_ALLOCATION` | 小 RAM：`1` | 静态创建 |
-| `configSUPPORT_DYNAMIC_ALLOCATION` | 小 RAM：`0` | 与策略一致 |
+| `configSUPPORT_DYNAMIC_ALLOCATION` | 小 RAM：`0` | 与策略一致；模板 port 是动态版，需替换为 Static API |
 | `configUSE_TASK_NOTIFICATIONS` | `1` | `port::TaskNotify*` 与一对一事件通知 |
 | `configCHECK_FOR_STACK_OVERFLOW` | `2` | 调试期必开 |
 | `configUSE_MALLOC_FAILED_HOOK` | 动态分配时 `1` | 堆失败要能停下来 |

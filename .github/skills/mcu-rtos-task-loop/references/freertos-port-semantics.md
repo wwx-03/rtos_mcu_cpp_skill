@@ -58,44 +58,16 @@ xTaskCreate(entry, name, stack_bytes, arg, priority, &handle);
 
 ## 3. 启动与调度器
 
-### 原生 FreeRTOS / CubeMX
+### 启动入口
 
-```c
-int main(void) {
-    HAL_Init();
-    SystemClock_Config();
-    MX_GPIO_Init();
-    // ... 创建任务 ...
-    vTaskStartScheduler();   // 只调用一次
-    for (;;) {
-    }
-}
-```
+| 平台 | 入口 | 调度器 |
+| --- | --- | --- |
+| 原生 FreeRTOS / CubeMX | `main()` | `vTaskStartScheduler()` 一次 |
+| ESP-IDF | `app_main()` | 启动代码已启动；不要再调用 |
+| CMSIS-RTOS2 | `main()` | `osKernelStart()` 一次 |
 
-`Application::Start()` 可以负责创建任务并启动调度器，但必须保证只调用一次。
-
-### ESP-IDF
-
-```cpp
-extern "C" void app_main(void) {
-    // app_main 本身已经运行在调度器创建的 main task 中
-    Board::GetInstance().Init();
-    Application::GetInstance().Start();   // 只建任务
-    // 不要调用 vTaskStartScheduler()
-}
-```
-
-### CMSIS-RTOS2
-
-```c
-int main(void) {
-    osKernelInitialize();
-    // 创建线程...
-    osKernelStart();   // 只调用一次
-    for (;;) {
-    }
-}
-```
+`Application::Init()` 建队列/信号量/定时器；`Application::Start()` 只创建任务/启动 timer。
+调度器由平台入口调用一次；完整入口代码见 `esp-idf.md` / `stm32-cubemx.md`。
 
 ## 4. ISR 安全 API
 

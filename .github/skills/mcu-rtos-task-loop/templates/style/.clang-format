@@ -1,0 +1,22 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++17
+
+# 与 references/layers-and-naming.md §6 一致
+UseTab: Always
+TabWidth: 4
+IndentWidth: 4
+AccessModifierOffset: -4
+IndentAccessModifiers: false
+BreakBeforeBraces: Attach
+DerivePointerAlignment: false
+PointerAlignment: Right
+ReferenceAlignment: Right
+ColumnLimit: 100
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+SpacesBeforeTrailingComments: 2

@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS "main.cpp"
     INCLUDE_DIRS "."
-    REQUIRES app bsp
+    # 按架构模式裁剪：Layered 可去掉 devices/services
+    REQUIRES app bsp devices services port
 )

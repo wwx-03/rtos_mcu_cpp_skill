@@ -68,7 +68,7 @@ bool Button::Start() {
 // templates/port/rtos_port.hpp 提供 Create/Start/Stop/Reset/DeleteTimer。
 // StartTimer/ResetTimer 的 delay 是命令阻塞等待时间，不是新周期；
 // 需要改周期时重新创建 timer，或在平台 port 增加 ChangeTimerPeriod。
-// DeleteTimer 的 wait_ms 是删除命令等待时间，清理 binding 时不要提前释放。
+// DeleteTimer 的 wait_ms 必须 > 0：由 port 在删除完成后释放 binding；不要在回调里调用。
 
 // 定时器任务上下文：只比较状态并投递，绝不阻塞
 void Button::OnTick(void* ctx) {
@@ -117,4 +117,4 @@ void Button::OnTick(void* ctx) {
 
 - 回调上下文矩阵见 `references/callback-contexts.md`；
 - 栈单位与优先级语义见 `references/platform-profile.md`；
-- 定时器/事件回调的失败与降级见 `SKILL.md` 第 11 节。
+- 定时器/事件回调的失败与降级见 `references/product-architecture.md` §3；高频错误见 `SKILL.md` §8。

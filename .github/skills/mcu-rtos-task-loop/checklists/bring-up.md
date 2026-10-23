@@ -5,11 +5,15 @@
 ## 1. 平台契约
 
 - [ ] 架构模式（Layered / DIP / Hybrid）已选定，理由与模块边界已记录
+- [ ] 每个模块已按 `references/layers-and-naming.md` §2 判定层级，并写入模块矩阵
+- [ ] 网络 / 存储 / 时间 / OTA / 加密走 `services`，没有塞进 `devices` 或 `app`
+- [ ] 新增/修改的符号符合命名标准；现有偏差已列“偏差清单”
+- [ ] `Init()` 只建资源，`Start()` 只建任务，运行期不 create/delete
 - [ ] 构建系统已强制依赖方向；临时 include 不允许的层会编译失败
 - [ ] DIP/Hybrid：抽象 `Board` 只含 `GetXxx()`，具体板已按 `<MCU><BoardName><Version>Board` 命名
 - [ ] DIP/Hybrid：具体板只在 `bsp/<board>_board.cpp` 内定义，末尾 `IMPLEMENT_BOARD_CLASS()`
 - [ ] DIP/Hybrid：全工程只编译一个板级 `.cpp`（多个 → 重复符号，缺失 → undefined reference）
-- [ ] DIP/Hybrid：`main()` 用 `Start(Board::GetInstance())` 注入 `Board &`
+- [ ] DIP/Hybrid：`main()` 先 `Board::GetInstance().Init()`，再 `Application::Init()/Start()`；Board 由 `Application` 构造函数注入
 - [ ] DIP/Hybrid：`devices` 接口析构为 `protected` 非虚，没有 `delete` 基类
 - [ ] Hybrid：实现层没有公共头文件，或公共头只包含接口类型
 - [ ] Hybrid：`references/module-matrix.md` 已填写模块路径与例外
@@ -69,6 +73,9 @@
 - [ ] 没有运行期 create/delete/new
 - [ ] `std::function`/`std::string`/STL 的分配风险已评估，策略与平台契约一致
 - [ ] 每个并发域的任务预算（栈/优先级/周期/阻塞点）已记录
+- [ ] 分配与 STL 策略按 `references/memory-and-stl.md` 核对
+- [ ] 静态创建的 task/queue buffer 生命周期覆盖任务/队列，未放在任务栈上
+- [ ] 失败降级、时间基、连接 owner 按 `references/runtime-policies.md` 核对
 
 ## 5. 数据与状态
 

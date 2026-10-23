@@ -20,7 +20,7 @@ tests/
 ## 原则
 
 - `devices`/`services` 是纯接口，不 include RTOS/厂商头；mock 直接实现这些接口。
-- `app` 通过构造函数或 `Init()` 注入 mock，不调用 `Board::GetInstance()`。
+- `app` 通过构造函数注入依赖，不调用 `Board::GetInstance()`。
 - 测试只编译 `app` + `devices` + `services` + `utility`，不链接 `bsp`/FreeRTOS。
 - 对时间、队列、任务通知做薄封装时，测试用假实现替换 `port`，或把纯逻辑抽到
   `utility` 做单元测试。

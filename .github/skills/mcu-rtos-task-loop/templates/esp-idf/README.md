@@ -5,6 +5,10 @@
 ```text
 <project>/
 ├── components/
+│   ├── app/                        # Application + APP 类
+│   ├── bsp/                        # 具体驱动 / services 实现
+│   ├── devices/                    # 器件抽象（Board/Device 接口）
+│   ├── services/                   # 网络/存储/时间/OTA 接口
 │   └── port/
 │       ├── CMakeLists.txt          <- templates/esp-idf/port/CMakeLists.txt
 │       ├── include/port/rtos_port.hpp  <- templates/port/rtos_port.hpp

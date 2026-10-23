@@ -1,7 +1,7 @@
 #include <stdlib.h>
 
 #include "app/application.hpp"
-#include "bsp/board.hpp"
+#include "devices/board.hpp"
 #include "esp_log.h"
 
 namespace {
@@ -17,5 +17,13 @@ extern "C" void app_main(void) {
 		abort();
 	}
 
-	Application::GetInstance().Start();  // 只创建任务，不启动调度器
+	Application &app = Application::GetInstance();
+	if (!app.Init()) {
+		ESP_LOGE(TAG, "app init failed");
+		abort();
+	}
+	if (!app.Start()) {
+		ESP_LOGE(TAG, "app start failed");
+		abort();
+	}
 }

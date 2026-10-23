@@ -4,16 +4,25 @@
 
 ## 1. 启动模型
 
-```c
+```cpp
 int main(void) {
     HAL_Init();
     SystemClock_Config();
     MX_GPIO_Init();
     MX_USART1_UART_Init();
     // ... 外设初始化 ...
-    Application_Init();
-    Application_Start();   // 创建任务
-    vTaskStartScheduler(); // 只调用一次
+
+    if (!Board::GetInstance().Init()) {
+        Error_Handler();
+    }
+    Application &app = Application::GetInstance();
+    if (!app.Init()) {          // 建队列/信号量/定时器
+        Error_Handler();
+    }
+    if (!app.Start()) {         // 创建任务
+        Error_Handler();
+    }
+    vTaskStartScheduler();      // 只调用一次
     for (;;) {
     }
 }
@@ -71,6 +80,8 @@ xTaskCreate(entry, name, stack_bytes / sizeof(StackType_t), arg, priority, &hand
 
 `templates/stm32/port/rtos_port.cpp` 还提供 `CreateTimer/Start/Stop/Reset/DeleteTimer`
 以及堆诊断。timer 回调运行在 timer task，只能投递。
+静态 task/queue 用 `port::StaticTask` / `port::StaticQueue`（见 `templates/port/rtos_port.hpp`），
+完整静态/动态示例见 `templates/app/`。
 
 ## 4. 静态分配
 
@@ -80,6 +91,13 @@ xTaskCreate(entry, name, stack_bytes / sizeof(StackType_t), arg, priority, &hand
 #define configSUPPORT_STATIC_ALLOCATION   1
 #define configSUPPORT_DYNAMIC_ALLOCATION  0
 ```
+
+> `templates/stm32/port/rtos_port.cpp` 同时提供动态 task/queue/timer 和静态
+> task/queue/timer（`port::StaticTask` / `StaticQueue` / `StaticTimer`）。
+> 设置 `configSUPPORT_DYNAMIC_ALLOCATION = 0` 后，动态 `CreateTask` / `CreateQueue` /
+> `CreateTimer` / `CreateBinarySemaphore` / `CreateMutex` 需要按 SDK 裁剪或替换；
+> 静态信号量仍需 `xSemaphoreCreateStatic`。
+> 静态任务模板见 `templates/app/`。
 
 此时必须提供空闲任务/定时器任务内存：
 
@@ -132,11 +150,11 @@ void vApplicationStackOverflowHook(TaskHandle_t task, char *name) {
 HAL 的 UART/EXTI 回调通常运行在 ISR 上下文：
 
 ```cpp
+// g_usart1_serial 在组合根 Init() 里注册；回调里不做全局查找
 extern "C" void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	if (huart->Instance != USART1) {
-		return;
+	if (huart->Instance == USART1 && g_usart1_serial != nullptr) {
+		g_usart1_serial->HandleRxCpltEvent();   // 只上报，不解析
 	}
-	Board::GetInstance().GetSerial()->HandleRxCpltEvent();   // 只上报，不解析
 }
 ```
 

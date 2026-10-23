@@ -7,14 +7,20 @@
 ```cpp
 extern "C" void app_main(void) {
     // app_main 已经运行在调度器创建的 main task 中
-    Board::GetInstance().Init();
-    Application::GetInstance().Start();   // 只创建任务，不启动调度器
+    if (!Board::GetInstance().Init()) {
+        abort();
+    }
+    Application &app = Application::GetInstance();
+    if (!app.Init()) {              // 建队列/信号量/定时器
+        abort();
+    }
+    app.Start();                    // 只创建任务，不启动调度器
 }
 ```
 
 - **不要**在 `app_main` 或 `Application::Start()` 里调用 `vTaskStartScheduler()`；
   否则会触发 FreeRTOS 断言/未定义行为。
-- `Application::Start()` 只创建主任务并返回；`app_main` 返回后调度器继续运行。
+- `Application::Start()` 只创建任务/启动 timer 并返回；`app_main` 返回后调度器继续运行。
 - `Board` / `Application` 单例可在 `app_main` 中构造；它们已经在任务上下文，
   不需要“调度器启动前”这条 CubeMX 规则。
 
@@ -31,6 +37,8 @@ xTaskCreate(entry, "task", 4096, arg, 4, &handle);  // 4096 bytes
 
 `templates/esp-idf/port/rtos_port.cpp` 还提供 `CreateTimer/Start/Stop/Reset/DeleteTimer`
 以及 `GetStackHighWaterMark`、`GetFreeHeap`、`GetMinimumEverFreeHeap`。
+静态 task/queue 用 `port::StaticTask` / `port::StaticQueue`（见 `templates/port/rtos_port.hpp`），
+完整静态/动态示例见 `templates/app/`。
 定时器回调通过 trampoline 转成 `TimerEntry(void*)`，运行在 FreeRTOS timer task，
 只能投递，不能阻塞或 stop/free 其他资源。
 
@@ -42,9 +50,9 @@ xTaskCreate(entry, "task", 4096, arg, 4, &handle);  // 4096 bytes
 project/
 ├── components/
 │   ├── app/        # Application + APP 类
-│   ├── bsp/        # Board、驱动、WiFi/MQTT
+│   ├── bsp/        # Board、驱动、services 实现
 │   ├── devices/    # 器件抽象（不含 RTOS/IDF 头）
-│   ├── services/   # WiFi/MQTT/存储/时间等平台服务接口（DIP/Hybrid 可选）
+│   ├── services/   # 网络/存储/时间/OTA 等平台能力接口
 │   ├── utility/    # 纯逻辑
 │   └── port/       # 唯一平台依赖点
 ├── main/           # app_main、Kconfig.projbuild、idf_component.yml
@@ -54,7 +62,7 @@ project/
 
 ### CMake 依赖（按架构模式）
 
-具体选哪种由 `SKILL.md` §2 的架构模式决定。
+具体选哪种由 `references/architecture.md` 决定。
 
 Layered（app 用 bsp，devices 只在 bsp 内部可见）：
 
@@ -81,49 +89,20 @@ idf_component_register(
 
 DIP 的 Board 与选板：
 
+- 抽象 `Board`、`IMPLEMENT_BOARD_CLASS`、具体板只在 `.cpp` 内定义：
+  见 `references/architecture.md` 与 `templates/devices/board.hpp`。
+- ESP-IDF 选板 = 只把一块板的 `.cpp` 加入 `SRCS`；多块重复符号，缺失 undefined reference。
+- 组合根顺序：
+
 ```cpp
-// devices/board.hpp —— 抽象 Board + 工厂 + 宏
-class Board;
-Board *create_new_board();
-
-class Board {
-public:
-	static Board &GetInstance() {
-		static Board *instance = create_new_board();
-		return *instance;
-	}
-
-	virtual Network *GetNetwork() = 0;
-	virtual Display *GetDisplay() = 0;
-
-protected:
-	Board() = default;    // 必须有：声明拷贝构造会抑制默认构造
-	~Board() = default;   // 静态对象，禁止 delete
-};
-
-#define IMPLEMENT_BOARD_CLASS(class_name) \
-	Board *create_new_board() {            \
-		static class_name instance;         \
-		return &instance;                   \
-	}
-
-// bsp/esp32_smart_lock_v01_board.cpp —— 具体板只在 .cpp 内定义（无 .hpp）
-namespace {
-class Esp32SmartLockV01Board final : public Board {
-public:
-	Network *GetNetwork() override;
-	Display *GetDisplay() override;
-};
-}  // namespace
-
-IMPLEMENT_BOARD_CLASS(Esp32SmartLockV01Board);
-
-// main.cpp —— 组合根
-Application::GetInstance().Start(Board::GetInstance());
+Board::GetInstance().Init();
+Application &app = Application::GetInstance();
+if (!app.Init()) { abort(); }
+if (!app.Start()) { abort(); }
 ```
 
-在 ESP-IDF 组件里，选板 = 只把一块板的 `.cpp` 加入 `SRCS`；
-加入两块会链接期重复符号，一块都没有会 undefined reference。
+> 模板的 `Application` 在构造函数里取 `Board::GetInstance()`（组合根）；
+> 严格 DIP 可改为构造注入 `Board &`，测试时注入假 Board。
 
 验收：在 app 里 include 一个不允许的层，构建必须失败。
 
