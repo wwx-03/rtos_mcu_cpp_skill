@@ -32,15 +32,21 @@ ESP-IDF 的 `xTaskCreate()` / `xTaskCreateStatic()` 栈深参数是 **byte**：
 xTaskCreate(entry, "task", 4096, arg, 4, &handle);  // 4096 bytes
 ```
 
-`uxTaskGetStackHighWaterMark()` 也返回 **byte**。代码里统一使用
-`port::TaskOptions.stack_bytes`，平台实现直接传给 `xTaskCreate`。
+`uxTaskGetStackHighWaterMark()` 也返回 **byte**。任务预算表直接按 byte 记录
+（`kTaskStackBytes`），传给 `xTaskCreate` 时不需要换算。
 
-`templates/esp-idf/port/rtos_port.cpp` 还提供 `CreateTimer/Start/Stop/Reset/DeleteTimer`
-以及 `GetStackHighWaterMark`、`GetFreeHeap`、`GetMinimumEverFreeHeap`。
-静态 task/queue 用 `port::StaticTask` / `port::StaticQueue`（见 `templates/port/rtos_port.hpp`），
-完整静态/动态示例见 `templates/app/`。
-定时器回调通过 trampoline 转成 `TimerEntry(void*)`，运行在 FreeRTOS timer task，
-只能投递，不能阻塞或 stop/free 其他资源。
+定时器直接用 `xTimerCreate(name, period_ticks, auto_reload, this, &X::OnTimer)`，
+用 `pvTimerGetTimerID()` 取回对象，不需要 trampoline 上下文。
+队列/任务/定时器都在 `Init()`/`Start()` 里一次创建，运行期不删除。
+
+ESP-IDF 没有 `configTOTAL_HEAP_SIZE`：未被静态占用的内部 RAM 由 IDF 堆管理器统一分配。
+大块缓冲显式指定能力：
+
+```c
+void *buffer = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);   // 有 PSRAM 时
+size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+size_t min_internal = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+```
 
 ## 3. 组件与构建
 
@@ -49,12 +55,11 @@ xTaskCreate(entry, "task", 4096, arg, 4, &handle);  // 4096 bytes
 ```text
 project/
 ├── components/
-│   ├── app/        # Application + APP 类
-│   ├── bsp/        # Board、驱动、services 实现
+│   ├── app/        # Application + APP 类（可用 freertos）
+│   ├── bsp/        # Board、驱动、services 实现（可用 freertos + esp_*）
 │   ├── devices/    # 器件抽象（不含 RTOS/IDF 头）
-│   ├── services/   # 网络/存储/时间/OTA 等平台能力接口
-│   ├── utility/    # 纯逻辑
-│   └── port/       # 唯一平台依赖点
+│   ├── services/   # 网络/存储/时间/OTA 等平台能力接口（不含 RTOS/IDF 头）
+│   └── utility/    # 纯逻辑
 ├── main/           # app_main、Kconfig.projbuild、idf_component.yml
 ├── partitions.csv
 └── sdkconfig.defaults
@@ -70,9 +75,9 @@ Layered（app 用 bsp，devices 只在 bsp 内部可见）：
 idf_component_register(
     SRCS "src/application.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES bsp port
+    REQUIRES bsp freertos
 )
-# bsp: REQUIRES port PRIV_REQUIRES devices
+# bsp: REQUIRES freertos PRIV_REQUIRES devices
 ```
 
 DIP（app 只看到 devices/services，bsp 实现接口，main 做组合根）：
@@ -81,10 +86,10 @@ DIP（app 只看到 devices/services，bsp 实现接口，main 做组合根）�
 idf_component_register(
     SRCS "src/application.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES devices services port
+    REQUIRES devices services freertos
 )
-# bsp:  REQUIRES devices services port
-# main: REQUIRES app bsp devices services port
+# bsp:  REQUIRES devices services freertos
+# main: REQUIRES app bsp devices services
 ```
 
 DIP 的 Board 与选板：
@@ -218,7 +223,8 @@ SSD1306 可直接使用 IDF 内置 `esp_lcd`：
 | 错误 | 现象 | 修正 |
 | --- | --- | --- |
 | `Application::Start()` 再调 `vTaskStartScheduler()` | 启动断言/挂死 | 只建任务；调度器已由 IDF 启动 |
-| 栈大小按 word 传 | 实际栈只有 1/4，随机溢出 | 按 byte 传，`port` API 用 `stack_bytes` |
+| 栈大小按 word 传 | 实际栈只有 1/4，随机溢出 | 按 byte 传（ESP-IDF 契约） |
+| 再包一层 `port::CreateTask` | 多一层要维护的转接 | 直接用 `xTaskCreate` / `xQueueCreate` / `xTimerCreate` |
 | `#include "FreeRTOS.h"` | 编译时报找不到头文件 | `#include "freertos/FreeRTOS.h"` + `REQUIRES freertos` |
 | 依赖写成 `espressif/esp-mqtt` | 组件下载 404 | 用 `espressif/mqtt` |
 | 在 SmartConfig 事件里 stop | 可能与事件任务竞争 | 投递任务或一次性 timer 延迟 |

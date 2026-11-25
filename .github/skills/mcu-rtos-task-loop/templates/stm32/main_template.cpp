@@ -17,7 +17,8 @@ int main(void) {
 	MX_USART1_UART_Init();
 	// ... 其他外设初始化 ...
 
-	// 单例在调度器启动前构造
+	// 单例在调度器启动前构造；RTOS 堆上限在 FreeRTOSConfig.h，
+	// 任务/队列/定时器在 Init()/Start() 里一次性创建，运行期不再申请。
 	if (!Board::GetInstance().Init()) {
 		Error_Handler();
 	}

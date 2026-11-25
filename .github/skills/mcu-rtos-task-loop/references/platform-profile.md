@@ -6,11 +6,13 @@
 > 1. 不确定的项必须查目标 SDK 的头文件/文档。
 > 2. 查不到就问用户，或标 `TODO`，禁止猜。
 > 3. 契约写入项目 `docs/platform.md`，后续改动沿用。
-> 4. 平台差异只允许出现在 `port/`，不要散落在 `app/`。
+> 4. 直接用所选用 RTOS 的原生 API，不再封装 `port/`；平台差异只写进本契约，
+>    芯片 SDK（`esp_*`/`HAL_*`）只出现在 `bsp/`。
 > 5. 架构模式（Layered / DIP / Hybrid）必须选定并写入契约，且由构建系统强制；
 >    只在文档里写分层不算完成。
 > 6. Hybrid 的“逐模块依赖”不能只靠组件级 `REQUIRES` 强制；必须让实现层不暴露
 >    公共头，或把模块拆成独立组件。例外写入模块矩阵。
+> 7. 分配策略固定为“启动时一次性分配、运行期不释放”，必须记录堆上限与验收水位。
 
 ## 1. 模板
 
@@ -47,21 +49,23 @@
 - 单例构造时机：
 
 ## 任务与栈
-- 任务创建 API：
+- 任务创建 API（原生）：
 - 栈深单位：byte / word
 - 栈高水位单位：byte / word
-- 静态分配是否支持：
-- 空闲任务/定时器任务内存回调是否必需：
+- 空闲任务/定时器任务优先级与栈：
 - 任务优先级范围：
 - 任务预算表（任务数/栈/周期/阻塞点）：
-- `port` 是否提供 timer / 栈高水位 / heap 诊断：
+- 诊断 API：栈高水位 / 当前堆 / 历史最低堆：
 
 ## 分配与 C++
-- 运行期是否允许 new/malloc：
+- RTOS 堆配置位置与上限：`configTOTAL_HEAP_SIZE` / heap_5 区域 / ESP-IDF 系统堆
+- 非堆 RAM 清单（静态对象、framebuffer、DMA、主栈、保留）：
+- 启动一次性分配清单（任务/队列/定时器/信号量）：
+- 启动后是否允许 new/malloc：否（必须说明例外）
+- 验收水位（空闲堆下限 / 余量百分比）：
 - `std::function` / `std::string` / STL 容器策略：
 - 异常/RTTI：开启 / 关闭
 - 分配失败策略：abort / 降级 / 重试
-- 静态分配扩展：类型、对齐、栈单位
 
 ## 中断与并发
 - ISR 投递 API：
@@ -104,10 +108,10 @@
 | 入口/调度器 | 启动文件、`main.c`、`app_main` 文档 | ESP-IDF 的 `app_main` 已在调度器中；CubeMX 的 `main()` 需要自己启动 |
 | 栈单位 | `task.h` 中 `xTaskCreate`/`xTaskCreateStatic` 的参数说明 | vanilla FreeRTOS 是 word；ESP-IDF 是 byte |
 | 高水位单位 | `uxTaskGetStackHighWaterMark` 注释 | ESP-IDF 返回 byte，不是 word |
-| 静态分配 | `configSUPPORT_STATIC_ALLOCATION` / 平台文档 | 静态工程必须提供 idle/timer 任务内存回调 |
-| ISR API | port 头文件、RTOS 文档 | ISR 只能用 `...FromISR`，最后处理 woken |
+| RTOS 堆上限 | `configTOTAL_HEAP_SIZE` / heap_5 区域 / sdkconfig / 链接脚本 | 堆太大会链接失败；ESP-IDF 无 `configTOTAL_HEAP_SIZE`，内部 RAM 由 IDF 堆管理 |
+| ISR API | RTOS 移植头文件、RTOS 文档 | ISR 只能用 `...FromISR`，最后处理 woken |
 | 中断优先级 | NVIC/PLIC/ESP-IDF 中断文档 | Cortex-M 的 5~15 不能直接套到 RISC-V |
-| 临界区 | RTOS port、芯片手册 | 双核 `taskENTER_CRITICAL` 只关当前核 |
+| 临界区 | RTOS 移植层源码、芯片手册 | 双核 `taskENTER_CRITICAL` 只关当前核 |
 | 定时器上下文 | RTOS/厂商 timer 文档 | 定时器回调通常不能阻塞、不能 stop/free |
 | 厂商事件上下文 | WiFi/MQTT/协议栈文档 | 事件任务里做重活会阻塞整个协议栈 |
 | 构建 | SDK 示例、组件 CMake、链接脚本 | 组件依赖/分区不足会在链接或运行期才暴露 |
@@ -122,6 +126,8 @@
 - 在厂商事件回调里准备 `stop/close/deinit`；
 - 在 ISR 里准备打印、延时、分配、拿互斥量；
 - 不确定某个回调是 ISR 还是任务上下文；
+- 准备再建一个 `port/` 层把 `xTaskCreate` / `xQueueSend` 包起来；
+- 准备逐对象用 `xTaskCreateStatic` / `xQueueCreateStatic` / `xTimerCreateStatic`；
 - app 同时 include bsp 和 devices，但没有逐模块规则；
 - Board.hpp 暴露具体驱动类型，app 直接依赖具体 BSP；
 - 只在文档里写 Layered/DIP，但构建系统仍允许任意 include；

@@ -13,8 +13,8 @@
 - 入口：app_main()，调度器已启动
 - 任务栈单位：byte
 - 栈高水位单位：byte
-- 分配：`Init()` 阶段动态创建，检查返回值
-- ISR：GPIO RDY 下降沿，xSemaphoreGiveFromISR
+- 分配：启动时一次性创建（任务/队列/定时器），运行期不释放
+- ISR：GPIO RDY 下降沿，xSemaphoreGiveFromISR + portYIELD_FROM_ISR
 - 临界区：单核关中断（C3）
 - 回调：WiFi/MQTT/SmartConfig 均为系统事件任务
 - 构建：idf_component_register + REQUIRES freertos
@@ -40,15 +40,16 @@ components/
 │   ├── wifi_station.*    # 实现 services/network
 │   └── onenet_mqtt.*     # 实现 services/message_transport
 ├── devices/              # pH/浊度算法、ADC/显示抽象
-├── utility/              # 中值滤波、定点格式化
-└── port/                 # 统一入口/栈单位/队列/临界区
+└── utility/              # 中值滤波、定点格式化
 ```
+
+没有 `port/`：`app` 与 `bsp` 直接 include `freertos/FreeRTOS.h` 等原生头文件。
 
 ## 3. 数据流
 
 ```text
 ADS1115 RDY ISR
-    │  SemaphoreGiveFromISR
+    │  xSemaphoreGiveFromISR + portYIELD_FROM_ISR
     ▼
 WaterMonitor task
     │  3 次采样 + 中值 + 5 点滤波 + 工程量换算
@@ -80,7 +81,7 @@ MainEventLoop
 1. **ESP-IDF 里重复调用 `vTaskStartScheduler()`**  
    `app_main` 已在调度器中；`Application::Start()` 只建任务。
 2. **栈大小按 word 传**  
-   ESP-IDF 是 byte；统一用 `port::TaskOptions.stack_bytes`。
+   ESP-IDF 是 byte、原生 FreeRTOS 是 word；按平台契约记录单位，用高水位实测。
 3. **在 SmartConfig 事件回调里 `esp_smartconfig_stop()`**  
    改为投递任务或一次性 timer 延迟。
 4. **ADS1115 3.3V 供电 + 浊度 3.8V 输出**  

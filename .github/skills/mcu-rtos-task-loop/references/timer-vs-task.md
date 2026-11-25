@@ -2,7 +2,7 @@
 
 ## 1. 结论
 
-默认选择**周期任务 + `port::DelayUntil`**（或 `vTaskDelayUntil`）：
+默认选择**周期任务 + `vTaskDelayUntil`**（CMSIS-RTOS2 用 `osDelayUntil`）：
 
 - 逻辑独立，出问题不影响其他模块；
 - 可以自由阻塞、打印、写 Flash、走总线；
@@ -32,7 +32,7 @@
 
 | 资源 | 周期任务 | 软件定时器 |
 | --- | --- | --- |
-| 每实例开销 | TCB + 独立栈（案例中按键任务为 2048 B 栈） | timer 控制块 + 回调上下文（几十字节） |
+| 每实例开销 | TCB + 独立栈（案例中按键任务为 2048 B 栈） | timer 控制块（几十字节，`this` 直接当 timer ID） |
 | 执行上下文 | 自己的任务 | 共享定时器任务（`Tmr Svc`） |
 | 优先级 | 可单独设置 | 跟随定时器任务 |
 | 能否阻塞 | 可以 | 不可以 |
@@ -58,21 +58,22 @@ GPIO 按键需要 20 ms 消抖并识别点击；回调最终只是向 `Applicati
 ```cpp
 bool Button::Start() {
 	pressed_ = Read();  // 记录初始电平，避免上电时误判
-	port::TimerOptions options{"button", 20, true, this};
-	if (!port::CreateTimer(&Button::OnTick, options, &timer_)) {
+	timer_ = xTimerCreate("button", pdMS_TO_TICKS(20), pdTRUE, this,
+		&Button::OnTimer);
+	if (timer_ == nullptr) {
 		return false;
 	}
-	return port::StartTimer(timer_, 0);
+	return xTimerStart(timer_, 0) == pdPASS;
 }
 
-// templates/port/rtos_port.hpp 提供 Create/Start/Stop/Reset/DeleteTimer。
-// StartTimer/ResetTimer 的 delay 是命令阻塞等待时间，不是新周期；
-// 需要改周期时重新创建 timer，或在平台 port 增加 ChangeTimerPeriod。
-// DeleteTimer 的 wait_ms 必须 > 0：由 port 在删除完成后释放 binding；不要在回调里调用。
+// Start/Reset 的第二个参数是命令阻塞等待时间，不是新周期；
+// 需要改周期时用 xTimerChangePeriod()。
+// 删除只放在关机/重配路径：xTimerDelete(timer_, wait_ms)，wait_ms > 0，
+// 且不要在回调里调用。
 
 // 定时器任务上下文：只比较状态并投递，绝不阻塞
-void Button::OnTick(void* ctx) {
-	auto* self = static_cast<Button*>(ctx);
+void Button::OnTimer(TimerHandle_t timer) {
+	auto *self = static_cast<Button *>(pvTimerGetTimerID(timer));
 	const bool pressed = self->Read();
 	if (self->pressed_ && !pressed) {
 		self->PostClickEvent();  // 入队 timeout = 0
@@ -91,7 +92,7 @@ void Button::OnTick(void* ctx) {
 ## 5. 使用软件定时器的硬约束
 
 1. 回调运行在定时器任务：只投递，不阻塞、不打印、不写 Flash、不 stop/delete 自身。
-2. 创建/启动放在 `Start()` 或 init 路径；运行期不反复 create/delete。
+2. 创建/启动放在 `Start()` 或 init 路径；定时器对象在启动时一次创建，运行期不反复 create/delete。
 3. 明确 tick 频率与精度（例如 1 kHz tick 下，20 ms 是 20 个 tick）。
 4. 确认定时器任务的优先级、栈、命令队列长度（`configTIMER_TASK_PRIORITY`、
    `configTIMER_TASK_STACK_DEPTH`、`configTIMER_QUEUE_LENGTH`）。
@@ -111,7 +112,7 @@ void Button::OnTick(void* ctx) {
 - 定时器任务的优先级、栈、命令队列长度；
 - tick 频率与最小周期；
 - `start/stop/delete` 是否可能阻塞，超时语义；
-- 是否支持静态分配（`xTimerCreateStatic`）。
+- 定时器对象是否计入启动分配预算。
 
 ## 8. 与其他参考的关系
 

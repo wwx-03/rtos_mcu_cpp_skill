@@ -14,14 +14,13 @@ bool Application::Init() {
 	if (!display_.Init()) {
 		return false;
 	}
-	if (!port::CreateQueue(kQueueLength, sizeof(Event), &queue_)) {
+	queue_ = xQueueCreate(kQueueLength, sizeof(Event));
+	if (queue_ == nullptr) {
 		return false;
 	}
-	const port::TimerOptions options{"App Tmr", kTimerPeriodMs, true, this};
-	if (!port::CreateTimer(&Application::TimerEntry, options, &timer_)) {
-		return false;
-	}
-	return true;
+	timer_ = xTimerCreate("App Tmr", pdMS_TO_TICKS(kTimerPeriodMs), pdTRUE, this,
+		&Application::TimerEntry);
+	return timer_ != nullptr;
 }
 
 bool Application::Start() {
@@ -38,13 +37,12 @@ bool Application::Start() {
 	if (!display_.Start()) {
 		return false;
 	}
-
-	const port::TaskOptions options{"app_main", kTaskStackBytes, this,
-		static_cast<int>(kPriority)};
-	if (!port::CreateTask(&Application::TaskEntry, options, &task_)) {
+	if (xTaskCreate(&Application::TaskEntry, "app_main", kTaskStackBytes, this,
+			kPriority, &task_) != pdPASS) {
+		task_ = nullptr;
 		return false;
 	}
-	if (!port::StartTimer(timer_, port::kNoWait)) {
+	if (xTimerStart(timer_, 0) != pdPASS) {
 		return false;
 	}
 	return PostStart();
@@ -69,11 +67,11 @@ bool Application::PostDeviceReceived(size_t size) {
 	return Post(event);
 }
 
-bool Application::PostDeviceReceivedFromIsr(size_t size, port::IsrWoken &woken) {
+bool Application::PostDeviceReceivedFromIsr(size_t size, BaseType_t *woken) {
 	Event event = {};
 	event.type = Event::Type::kDeviceReceived;
 	event.data.device_received.size = size;
-	if (!port::QueueSendFromIsr(queue_, &event, &woken.value)) {
+	if (xQueueSendFromISR(queue_, &event, woken) != pdPASS) {
 		// 32 位原子在 Cortex-M/ESP32 上 lock-free；其他平台需确认 ISR 安全性。
 		dropped_.fetch_add(1, std::memory_order_relaxed);
 		return false;
@@ -81,8 +79,11 @@ bool Application::PostDeviceReceivedFromIsr(size_t size, port::IsrWoken &woken) 
 	return true;
 }
 
-void Application::TimerEntry(void *ctx) {
-	static_cast<Application *>(ctx)->PostTimerElapsed();
+void Application::TimerEntry(TimerHandle_t timer) {
+	auto *self = static_cast<Application *>(pvTimerGetTimerID(timer));
+	if (self != nullptr) {
+		(void)self->PostTimerElapsed();
+	}
 }
 
 void Application::TaskEntry(void *ctx) {
@@ -92,7 +93,7 @@ void Application::TaskEntry(void *ctx) {
 void Application::MainEventLoop() {
 	for (;;) {
 		Event event = {};
-		if (port::QueueReceive(queue_, &event, port::kWaitForever)) {
+		if (xQueueReceive(queue_, &event, portMAX_DELAY) == pdPASS) {
 			HandleEvent(event);
 		}
 	}
@@ -141,7 +142,7 @@ void Application::HandleDeviceReceived(size_t size) {
 }
 
 bool Application::Post(const Event &event) {
-	if (!port::QueueSend(queue_, &event, port::kNoWait)) {
+	if (xQueueSend(queue_, &event, 0) != pdPASS) {
 		dropped_.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}

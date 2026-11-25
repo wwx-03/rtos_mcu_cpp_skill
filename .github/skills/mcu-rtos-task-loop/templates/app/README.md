@@ -1,18 +1,21 @@
-# Application + Display 模板：静态分配 vs 动态分配
+# Application + Display 模板（直接用 RTOS 原生 API）
 
-两套完整的 APP 层模板，**二选一复制到工程**：
+一套 APP 层模板，复制到 `components/app/`（ESP-IDF）或 EIDE/Keil 的 `app/` 分组。
 
 ```text
 templates/app/
-├── static_task/                 # StaticQueue + StaticTask + StaticTimer
-│   ├── application.hpp/.cpp
-│   └── display.hpp/.cpp
-└── dynamic_task/                # port::CreateXxx（无模板）
-    ├── application.hpp/.cpp
-    └── display.hpp/.cpp
+├── application.hpp/.cpp       # 组合根：主队列 + 主任务 + 主定时器
+└── display.hpp/.cpp           # APP 模块：异步 API + 内部队列 + 绘制任务
 ```
 
 依赖的接口在 `templates/devices/`：`board.hpp`、`device.hpp`、`display_panel.hpp`。
+
+**不提供 `port/` 封装，也不提供静态分配版本。** 代码直接调用 FreeRTOS：
+
+- ESP-IDF：`#include "freertos/FreeRTOS.h"`、`"freertos/queue.h"`、`"freertos/task.h"`、
+  `"freertos/timers.h"`；
+- 原生 FreeRTOS（STM32 等）：换成 `#include "FreeRTOS.h"`、`"queue.h"`、`"task.h"`、
+  `"timers.h"`。
 
 ## 1. Display：外部只投递，内部绘制
 
@@ -54,12 +57,15 @@ Application::Application()
 
 bool Application::Init() {
     if (!display_.Init()) { return false; }   // Display 内部队列
-    // 建主队列 / 主 timer
+    queue_ = xQueueCreate(kQueueLength, sizeof(Event));
+    timer_ = xTimerCreate("App Tmr", pdMS_TO_TICKS(kTimerPeriodMs), pdTRUE, this,
+        &Application::TimerEntry);
+    // ...
 }
 
 bool Application::Start() {
     if (!display_.Start()) { return false; }  // Display 绘制任务
-    // 建主任务 / 启动 timer / 投递 kStart
+    // xTaskCreate 主任务 / xTimerStart / 投递 kStart
 }
 ```
 
@@ -76,26 +82,32 @@ void Application::HandleTimerElapsed() {
 }
 ```
 
-## 3. 静态 vs 动态
+## 3. 分配策略：启动时一次性分配
 
-| 项 | `static_task` | `dynamic_task` |
-| --- | --- | --- |
-| 主队列 / 主任务 / 主 timer | `StaticQueue` / `StaticTask` / `StaticTimer` | `QueueHandle` / `TaskHandle` / `TimerHandle` |
-| Display 队列 / 任务 | `StaticQueue` / `StaticTask` | `QueueHandle` / `TaskHandle` |
-| 创建 | `queue_.Create()` / `task_.Start()` / `timer_.Create()` | `port::CreateQueue` / `CreateTask` / `CreateTimer` |
-| ISR 发送 | `queue_.SendFromIsr()` | `port::QueueSendFromIsr()` |
-| 失败时机 | 编译期 `static_assert` + 返回值 | 运行期返回值 |
+模板不做逐对象静态创建（`xTaskCreateStatic` / `xQueueCreateStatic` / `xTimerCreateStatic`）。
+队列、任务、定时器全部来自 RTOS 堆，在 `Init()` / `Start()` 里一次创建完，
+运行期不删除、不释放。RAM 受限平台的落地顺序：
 
-`MainEventLoop()` / `HandleEvent()` / `HandleXxx()` 结构相同，只是队列调用不同。
+1. 先把**不用 RTOS 堆**的 RAM 布置完：全局/静态对象、显示 framebuffer、DMA 缓冲、
+   协议栈静态缓冲、大常量放 flash；
+2. 剩余 RAM 配成 RTOS 最大堆（FreeRTOS `configTOTAL_HEAP_SIZE`，heap_4/heap_5；
+   ESP-IDF 的堆是 IDF 自动管理的内部 RAM，不需要这个宏）；
+3. 启动时一次性创建所有任务/队列/定时器/信号量；
+4. 用 `xPortGetMinimumEverFreeHeapSize()` / `heap_caps_get_minimum_free_size()`
+   验证水位，留 10% 或 1~2 KB 余量。
+
+细节见 `references/memory-and-stl.md`。
 
 ## 4. 约束
 
-- 静态版要求 `configSUPPORT_STATIC_ALLOCATION = 1`；`Application` 含主任务 +
-  Display 任务两份栈（约 7 KB），必须全局/静态，不能放任务栈上。
-- 动态版要求 `configSUPPORT_DYNAMIC_ALLOCATION = 1`；`Init()`/`Start()` 返回值必须检查。
+- **栈单位按平台契约**：ESP-IDF 的 `xTaskCreate` 用 byte；原生 FreeRTOS 用 word。
+  模板按 ESP-IDF 写（`kTaskStackBytes`）；STM32 改成 `kTaskStackWords` 并直接填 word。
+- `Init()`/`Start()` 返回值必须检查；启动期分配失败是配置错误，记录后停机，
+  不要带着空句柄继续跑。
 - `Init()` 只建资源；`Start()` 只建任务/启动 timer，**不启动调度器**。
 - Device 回调必须在任务上下文调用；ISR 先投递到 BSP 任务，再由 BSP 任务
   调用 `NotifyReceived()`。
+- 定时器回调运行在 timer 任务：只投递，不阻塞、不 stop/delete 自身。
 
 ## 5. 构建
 
@@ -103,9 +115,9 @@ void Application::HandleTimerElapsed() {
 idf_component_register(
     SRCS "src/application.cpp" "src/display.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES port devices
+    REQUIRES devices services freertos
 )
 ```
 
-动态版把 `static_task` 换成 `dynamic_task`；**不要同时加入两个目录**。
-EIDE / Keil：文件列表里只挂其中一套 `.cpp`。
+EIDE / Keil：把 `application.cpp`、`display.cpp` 与 FreeRTOS 内核文件加入工程，
+`app/`、`bsp/` 按 C++17 编译，`-fno-exceptions -fno-rtti`。

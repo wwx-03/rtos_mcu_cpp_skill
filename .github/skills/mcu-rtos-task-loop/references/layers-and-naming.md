@@ -3,41 +3,46 @@
 > 本文件是**唯一标准**。生成或改造代码时，层级与命名以本文件为准。
 > 现有工程不一致时：新增/改动的符号按本文件，现有偏差写进“偏差清单”，不批量重命名。
 
-## 1. 六层职责
+## 1. 五层职责
 
 | 层 | 职责 | 可以依赖 | 禁止 |
 | --- | --- | --- | --- |
-| `app/` | 业务状态机、协议报文、事件派发 | `devices`/`services` 接口、`port`；Hybrid 下可用简单 `bsp` 具体类 | 寄存器、HAL/IDF 调用、平台 `#ifdef`、具体板头 |
+| `app/` | 业务状态机、协议报文、事件派发 | `devices`/`services` 接口、RTOS 原生 API；Hybrid 下可用简单 `bsp` 具体类 | 寄存器、厂商 SDK（`esp_*`/`HAL_*`）、平台 `#ifdef`、具体板头 |
 | `services/` | 平台能力接口（网络/存储/时间/OTA/加密） | 仅标准库 | RTOS、厂商头、具体引脚、业务报文 |
 | `devices/` | 器件抽象、纯协议/算法接口 | 仅标准库 | RTOS、厂商头、网络、存储、时间、任务/队列 |
-| `bsp/` | 具体驱动、板级组合根、ISR/厂商回调 | `devices`/`services`/`port`、厂商 SDK | 业务状态机、上层类型、反向依赖 `app` |
+| `bsp/` | 具体驱动、板级组合根、ISR/厂商回调 | `devices`/`services`、RTOS 原生 API、厂商 SDK | 业务状态机、上层类型、反向依赖 `app` |
 | `utility/` | 纯函数、数据结构（滤波/CRC/格式化/环形缓冲） | 仅标准库 | 全局状态、IO、时间、RTOS |
-| `port/` | RTOS/SDK 薄封装（任务/队列/信号量/临界区/时间） | RTOS/SDK | 业务逻辑、器件语义 |
 
 依赖方向（Hybrid 默认）：
 
 ```text
-app → devices / services ← bsp → port → RTOS / SDK
-app ──────────────────────→ port
+app → devices / services ← bsp → RTOS / SDK
+app ──────────────────────→ RTOS / SDK（只用 RTOS API，不用芯片 SDK）
 utility ← 所有层（只被依赖，不反向依赖）
 ```
 
 `Board` 是组合根，只在 `main()`/`app_main()` 使用。
 
+**没有 `port/` 层**：用什么 RTOS 就直接用它的 API，不再包一层
+`port::CreateTask` / `port::QueueSend` 转接。RTOS API 只允许出现在 `app/` 与 `bsp/`；
+`devices/`、`services/`、`utility/` 保持不依赖 RTOS，才能做主机侧测试。
+芯片厂商 SDK（`esp_*`、`HAL_*`、寄存器）只允许出现在 `bsp/`。
+
 ## 2. 判定顺序（按顺序问，第一个命中即定层）
 
-1. 是任务/队列/临界区/时间/调度器这类**平台语义封装**？→ `port/`
-2. 绑定了**具体引脚、总线实例、中断号、厂商回调**？→ `bsp/`（实现 `devices`/`services` 接口）
-3. 有**芯片型号、数据手册、寄存器或固定命令集**？→ `devices/`
-4. 是 SDK 提供的**平台能力**，涉及连接/状态/凭据/重试/异步事件，且跨器件？→ `services/`
-5. 是**业务规则、流程、协议报文、状态机**，换硬件不变？→ `app/`
-6. 是**纯函数/数据结构**，无 IO、无时间、无 RTOS？→ `utility/`
-7. 都不满足 → 先拆分；不允许“放哪都行”。
+1. 绑定了**具体引脚、总线实例、中断号、厂商回调**？→ `bsp/`（实现 `devices`/`services` 接口）
+2. 有**芯片型号、数据手册、寄存器或固定命令集**？→ `devices/`
+3. 是 SDK 提供的**平台能力**，涉及连接/状态/凭据/重试/异步事件，且跨器件？→ `services/`
+4. 是**业务规则、流程、协议报文、状态机**，换硬件不变？→ `app/`
+5. 是**纯函数/数据结构**，无 IO、无时间、无 RTOS？→ `utility/`
+6. 都不满足 → 先拆分；不允许“放哪都行”。
 
 **device 与 service 的分界线**：`devices` 是“一个器件”，`services` 是“一种平台能力”。
 
 - 有芯片、有总线、有数据手册 → `devices`
 - 由 SDK 提供、有连接/凭据/重试/异步事件 → `services`
+
+任务/队列/定时器不是“模块”，不单独定层：它们属于使用它们的 `app` 或 `bsp` 模块。
 
 ## 3. 模块归类表
 
@@ -91,7 +96,8 @@ public:
 | 滤波/换算放 `bsp/` | 纯算法应可主机测试 | `utility/` 或 `devices/` 内的纯函数 |
 | 同一模块既有 `devices` 公共头又有 `bsp` 公共头 | 出现两条依赖路径 | 接口在 `devices`，实现头放 `src/` 私有 |
 | `services` 里写寄存器 | services 应平台无关 | 下沉到 `bsp/` 实现 |
-| `devices` include FreeRTOS | 器件抽象不该知道 RTOS | 只在 `bsp/`/`port/` |
+| `devices` include FreeRTOS | 器件抽象不该知道 RTOS | 只在 `app/` 或 `bsp/` |
+| 再封一层 `port::CreateTask` 包住 FreeRTOS | 多一层要维护的转接，语义仍是 FreeRTOS | 直接用 `xTaskCreate` 等原生 API |
 | `Board` 暴露具体驱动类型 | app 依赖实现细节 | 暴露 `devices`/`services` 接口 |
 | 按外设拆 `uart_task`/`gpio_task` | 任务应按资源 owner 拆 | 一个并发域一个任务 |
 
@@ -99,7 +105,7 @@ public:
 
 | 对象 | 规则 | 示例 |
 | --- | --- | --- |
-| 目录 | snake_case，固定六层 | `app/ bsp/ devices/ services/ utility/ port/` |
+| 目录 | snake_case，固定五层 | `app/ bsp/ devices/ services/ utility/` |
 | 文件 | snake_case，一名一类 | `water_monitor.hpp` / `water_monitor.cpp` |
 | 接口头 | `include/<layer>/xxx.hpp` | `devices/include/devices/display.hpp` |
 | 实现源 | `src/xxx.cpp` | `bsp/src/ssd1306_panel.cpp` |
@@ -109,11 +115,11 @@ public:
 | 具体板 | `<Mcu><BoardName><Version>Board` | `Esp32SmartLockV01Board` |
 | APP 类 | 领域名词，不加 `App`/`Manager`/`Helper` 后缀 | `WaterMonitor`、`Display` |
 | 方法 | PascalCase，动词开头 | `DrawText()`、`HandleRxCpltEvent()` |
-| 自由函数 | PascalCase；`create_new_board()` 为固定例外 | `ToTicks()`、`TimerTrampoline()` |
+| 自由函数 | PascalCase；`create_new_board()` 为固定例外 | `ToTicks()`、`ToStackWords()` |
 | 数据成员（类） | snake_case + 后缀 `_` | `queue_`、`ready_` |
 | POD 载荷字段 | snake_case，无后缀 | `event`、`sample`、`text` |
 | 局部变量 / 参数 | snake_case | `stack_words`、`text` |
-| 句柄 | 类型后缀 | `main_queue_`、`led_task_`、`bus_mutex_`、`key_timer_` |
+| 句柄 | 类型后缀 | `main_queue_`、`led_task_`、`bus_mutex_`、`key_timer_`；类型用 RTOS 原生 `QueueHandle_t` / `TaskHandle_t` / `SemaphoreHandle_t` / `TimerHandle_t` |
 | 布尔成员 | 形容词/过去分词 | `ready_`、`connected_` |
 | 常量 | `constexpr kPascalCase` | `kMaxSamples`、`kDefaultTimeoutMs` |
 | 宏 | `UPPER_SNAKE`，仅限条件编译 | `CONFIG_*`、`ESP_PLATFORM` |
@@ -121,10 +127,10 @@ public:
 | 状态 | `enum class State : uint8_t`，值 `kXxx` | `kIdle`、`kConnecting` |
 | 载荷结构 | `struct XxxSample` / `XxxCommand` | `WaterQualitySample` |
 | 类型别名 | `using Xxx = ...;`，PascalCase | `using SampleBuffer = ...;` |
-| 命名空间 | 仅 `port`；文件内用匿名 namespace | `namespace { ... }` |
+| 命名空间 | 不额外开命名空间；文件内用匿名 namespace | `namespace { ... }` |
 | ISR | `<来源>Isr` | `SensorReadyIsr` |
-| 任务入口 | `static void TaskEntry(void *ctx)` + `TaskLoop()` | |
-| 定时器回调 | `static void OnTimer(void *ctx)` / `OnTick` | |
+| 任务入口 | `static void TaskEntry(void *ctx)` + `TaskLoop()` | `xTaskCreate(&X::TaskEntry, ...)` |
+| 定时器回调 | `static void OnTimer(TimerHandle_t timer)` / `OnTick` | `xTimerCreate(..., &X::OnTimer)` |
 | 事件处理 | `HandleXxx()` | `HandleWifiDisconnected()` |
 | 内部投递 | `PostXxx()` | `PostWaterQualityEvent()` |
 | 只读查询 | `IsXxx()` / `HasXxx()` | `IsConnected()` |
@@ -142,13 +148,15 @@ public:
 ### 命名反例
 
 `doThing`、`m_foo`、`p_foo`、`IThing`、`ThingManager`、`ThingHelper`、
-`ThingUtil`、`xyzTask`（自由函数）、匈牙利前缀、随意缩写。
+`ThingUtil`、`xyzTask`（自由函数）、匈牙利前缀、随意缩写、
+`portTaskHandle`（把封装层名字带进业务代码）。
 
 ## 6. 风格细则
 
 - 缩进 Tab，K&R 花括号，`#pragma once`。
-- include 顺序：自身头文件 → C 标准库 → C++ 标准库 → 项目内 → 厂商 SDK。
-- 组件内 include 用根路径：`#include "devices/display.hpp"`。
+- include 顺序：自身头文件 → C 标准库 → C++ 标准库 → 项目内 → 厂商 SDK / RTOS。
+- 组件内 include 用根路径：`#include "devices/display.hpp"`；ESP-IDF 的 RTOS 头用
+  `#include "freertos/FreeRTOS.h"`，原生 FreeRTOS 用 `#include "FreeRTOS.h"`。
 - 头文件不写 `using namespace`；只放声明、`inline`/`constexpr`/模板。
 - 一个文件一个类；具体板类只在 `.cpp` 内定义。
 - 用 `nullptr`、`static_cast`；不用 C 风格转换；单参构造加 `explicit`；
@@ -167,7 +175,9 @@ public:
 4. **新代码 100% 按本文件命名**；现有偏差列“偏差清单”，本次不修。
 5. **缺 `services/` 就补**：本任务涉及的 网络/存储/时间/OTA 模块从 `devices`/`app`
    迁到 `services` 接口 + `bsp` 实现；无关模块只进偏差清单，不在本次迁移。
-6. **冲突规则**：新文件、新符号、正在改的符号以本文件为准；
+6. **现有 `port/` 封装**：新代码直接用原生 RTOS API，不再往 `port/` 加东西；
+   已有调用按模块逐步替换，不做一次性大重构，偏差写进清单。
+7. **冲突规则**：新文件、新符号、正在改的符号以本文件为准；
    不允许用“跟现有工程保持一致”作为沿用错误命名的理由。
 
 ### 偏差清单模板
@@ -177,6 +187,7 @@ public:
 | --- | --- | --- | --- |
 | `bsp/wifiTask` | 自由函数、驼峰 | 保留不动，新增 `Wifi::TaskLoop()` | 统一重命名 |
 | `devices/mqtt_client.hpp` | 平台能力放错层 | 新增 `services/message_transport.hpp`，旧文件标 deprecated | 迁到 bsp 实现 |
+| `port/rtos_port.hpp` | 多余的 RTOS 封装层 | 新代码不用；本次不动旧调用 | 按模块换回原生 API |
 ```
 
 ## 8. 审查输出格式
@@ -187,6 +198,7 @@ public:
 | --- | --- | --- | --- | --- |
 | `app/network.cpp:42` | 分层 | app 里直接调用 `esp_mqtt_client_*` | 抽 `services/message_transport.hpp` + `bsp` 实现 | P0 |
 | `bsp/wifi.cpp:17` | 命名 | `wifiTask` 自由函数 | `Wifi::TaskLoop()` | P1 |
+| `port/rtos_port.hpp:1` | 分层 | 给 FreeRTOS 再包一层 `port::` | 直接用原生 API，删掉封装层 | P1 |
 
 规则：先列 P0（会导致错误行为/无法测试），再列 P1（一致性问题）；
 每条给最小修改建议；不要求全量重命名。

@@ -27,7 +27,7 @@
 - 墙钟只用于业务时间、日志时间戳、token 过期。
 - RTC 未同步时 `time()` 不可信：先 SNTP/NTP，或使用固定/可配置过期时间。
 - 注意 `TickType_t` 溢出；长时间运行用 64 位单调时间做诊断。
-- 周期任务用 `port::DelayUntil`，不要用 `DelayMs` 累积漂移。
+- 周期任务用 `vTaskDelayUntil`，不要用 `vTaskDelay` 累积漂移。
 
 ## 5. 连接状态机
 

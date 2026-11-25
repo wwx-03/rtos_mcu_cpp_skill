@@ -1,6 +1,10 @@
-# FreeRTOS 移植层语义对照
+# RTOS API 语义对照（FreeRTOS / ESP-IDF / CMSIS-RTOS2）
 
-本文件记录**会改变代码正确性**的 RTOS 移植差异。它比“具体 MCU 型号”更稳定，但仍会随 SDK 版本变化；使用前请对照目标 SDK 的头文件确认。
+本文件记录**会改变代码正确性**的 RTOS 语义差异。它比“具体 MCU 型号”更稳定，但仍会随
+SDK 版本变化；使用前请对照目标 SDK 的头文件确认。
+
+**代码直接用所选用 RTOS 的原生 API，不再包一层 `port/` 转接。**
+下表是查证清单，不是封装接口。
 
 ## 1. 一页对照表
 
@@ -8,15 +12,14 @@
 | --- | --- | --- | --- |
 | 入口 | 用户 `main()` | `app_main()` | 用户 `main()` |
 | 调度器 | `vTaskStartScheduler()` 一次 | 启动代码已启动；不要再调用 | `osKernelStart()` 一次 |
-| 任务创建 | `xTaskCreate` / `xTaskCreateStatic` | 同左 + `xTaskCreatePinnedToCore` | `osThreadNew` |
+| 任务创建 | `xTaskCreate` | `xTaskCreate` / `xTaskCreatePinnedToCore` | `osThreadNew` |
 | 栈深单位 | **word**（`StackType_t`） | **byte** | `osThreadAttr_t.stack_size` 为 byte |
 | 栈高水位单位 | word | **byte** | `osThreadGetStackSpace` 返回 byte（按实现） |
-| 静态分配 | 由 `configSUPPORT_STATIC_ALLOCATION` 决定 | 支持，常用动态 | 通过 `attr.cb_mem/stack_mem` |
 | ISR 入队 | `xQueueSendFromISR(..., &woken)` | 同左 | `osMessageQueuePut(..., timeout=0)` |
 | ISR 释放信号量 | `xSemaphoreGiveFromISR` | 同左 | `osSemaphoreRelease` |
 | ISR yield | `portYIELD_FROM_ISR(woken)` | 同左 | `osThreadFlagsSet` 等 |
-| 临界区 | `taskENTER_CRITICAL`（单核） | 单核有效；双核需 `portMUX_TYPE` | `osKernelLock` 或平台原语 |
-| 软件定时器回调 | timer task | `esp_timer` 任务/ISR（看 dispatch） | `osTimer` 回调（按实现） |
+| 临界区 | `taskENTER_CRITICAL()` | 需要 `portMUX_TYPE`；双核需 spinlock | `osKernelLock` 或平台原语 |
+| 软件定时器回调 | timer task | FreeRTOS timer task 或 `esp_timer` | `osTimer` 回调（按实现） |
 | Tick | `configTICK_RATE_HZ` | 默认 100 Hz，可配置 | `osKernelGetTickFreq()` |
 
 > 千万不要把这张表当成“永久真理”。写代码前打开目标 SDK 的头文件，
@@ -46,19 +49,20 @@ ESP-IDF 的 `uxTaskGetStackHighWaterMark()` 也返回 **byte**：
 UBaseType_t free_bytes = uxTaskGetStackHighWaterMark(handle);
 ```
 
-`port::TaskOptions.stack_bytes` 统一用字节，由平台实现换算：
+**处理方式**：任务预算表按平台单位记录，常量名与单位一致
+（ESP-IDF 用 `kTaskStackBytes`，原生 FreeRTOS 用 `kTaskStackWords`）。
+需要在两种单位间换算时，写一个纯函数放 `utility/`：
 
 ```cpp
-// 原生 FreeRTOS
-xTaskCreate(entry, name, stack_bytes / sizeof(StackType_t), arg, priority, &handle);
-
-// ESP-IDF
-xTaskCreate(entry, name, stack_bytes, arg, priority, &handle);
+constexpr UBaseType_t ToStackWords(uint32_t bytes) {
+	return static_cast<UBaseType_t>(
+		(bytes + sizeof(StackType_t) - 1) / sizeof(StackType_t));
+}
 ```
 
-## 3. 启动与调度器
+不要为此再造一层 `CreateTask` 封装。
 
-### 启动入口
+## 3. 启动与调度器
 
 | 平台 | 入口 | 调度器 |
 | --- | --- | --- |
@@ -75,12 +79,13 @@ xTaskCreate(entry, name, stack_bytes, arg, priority, &handle);
 | --- | --- | --- |
 | 队列发送 | `xQueueSendFromISR(q, &item, &woken)` | `osMessageQueuePut(q, &item, 0, 0)` |
 | 二值信号量 | `xSemaphoreGiveFromISR(sem, &woken)` | `osSemaphoreRelease(sem)` |
-| 任务通知 | `vTaskNotifyGiveFromISR(handle, &woken)` | `osThreadFlagsSet(handle, flags)` |
+| 任务通知 | `vTaskNotifyGiveFromISR(task, &woken)` | `osThreadFlagsSet(task, flags)` |
 | yield | `portYIELD_FROM_ISR(woken)` | 由内核在返回时处理 |
 
 规则：
 
 - ISR 里只能用 `...FromISR` / timeout = 0 的 API；
+- `woken` 必须是 `BaseType_t` 局部变量，初始化为 `pdFALSE`，末尾处理；
 - 不要在 ISR 里打印、延时、分配、拿互斥量、写 Flash；
 - 需要通知任务的中断，其优先级必须满足 RTOS 的 ISR 安全约束；
 - 中断优先级规则是芯片/移植相关的，不要跨平台套用。
@@ -132,24 +137,30 @@ portEXIT_CRITICAL(&lock);
 
 **需要在回调里停止/释放资源时**：把动作投递到普通任务，或用一次性 timer 延迟到任务上下文。
 
-## 7. CMSIS-RTOS2 映射
+FreeRTOS 定时器直接用 `pvTimerGetTimerID()` 携带 `this`，不需要额外的 trampoline 上下文：
 
-| 本技能（FreeRTOS 原生） | CMSIS-RTOS2 |
+```cpp
+TimerHandle_t timer = xTimerCreate("button", pdMS_TO_TICKS(20), pdTRUE, this,
+	&Button::OnTimer);
+```
+
+## 7. FreeRTOS ↔ CMSIS-RTOS2 映射
+
+| FreeRTOS | CMSIS-RTOS2 |
 | --- | --- |
-| `xTaskCreateStatic` | `osThreadNew` + `osThreadAttr_t`（`.stack_mem` / `.cb_mem`） |
-| `xQueueCreateStatic` | `osMessageQueueNew` + `.mq_mem` / `.mq_size` |
-| `xQueueSend` / `xQueueSendFromISR` | `osMessageQueuePut(..., timeout)`（ISR 里 timeout 必须 0） |
-| `xQueueReceive` | `osMessageQueueGet` |
-| `xSemaphoreCreateBinaryStatic` | `osSemaphoreNew(1, 0, &attr)` |
-| `xSemaphoreCreateMutexStatic` | `osMutexNew` + `.cb_mem` |
-| `xSemaphoreGiveFromISR` | `osSemaphoreRelease`（ISR 安全） |
-| `xTaskNotifyFromISR` / `ulTaskNotifyTake` | `osThreadFlagsSet` / `osThreadFlagsWait` |
-| `xTimerCreateStatic` | `osTimerNew` + `.cb_mem` |
+| `xTaskCreate` | `osThreadNew` + `osThreadAttr_t` |
+| `vTaskDelete` | `osThreadTerminate` |
+| `xQueueCreate` / `xQueueSend` / `xQueueReceive` | `osMessageQueueNew` / `osMessageQueuePut` / `osMessageQueueGet` |
+| `xQueueSendFromISR` | `osMessageQueuePut(..., timeout=0)`（ISR 里） |
+| `xSemaphoreCreateBinary` / `xSemaphoreGive` | `osSemaphoreNew(1, 0, NULL)` / `osSemaphoreRelease` |
+| `xSemaphoreCreateMutex` | `osMutexNew` |
+| `xTaskNotifyGive` / `ulTaskNotifyTake` | `osThreadFlagsSet` / `osThreadFlagsWait` |
+| `xTimerCreate` | `osTimerNew` |
 | `vTaskDelay` / `vTaskDelayUntil` | `osDelay` / `osDelayUntil` |
-| `taskENTER_CRITICAL` | 短临界区仍用平台原语；长临界区用 `osKernelLock` |
-| `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY` | 同一份 FreeRTOSConfig 生效 |
+| `uxTaskGetStackHighWaterMark` | `osThreadGetStackSpace` |
+| `xPortGetFreeHeapSize` / `xPortGetMinimumEverFreeHeapSize` | 取决于实现（不一定提供） |
 
-CMSIS-RTOS2 只是 API 封装，**中断优先级、分配策略、栈语义仍由底层 RTOS/移植决定**。
+CMSIS-RTOS2 只是 API 封装，**中断优先级、堆配置、栈语义仍由底层 RTOS/移植决定**。
 
 ## 8. 已知易错点
 
@@ -161,4 +172,5 @@ CMSIS-RTOS2 只是 API 封装，**中断优先级、分配策略、栈语义仍�
 - 在 FreeRTOS timer 回调里等队列或阻塞；
 - 把 `uxTaskGetStackHighWaterMark` 的返回值当 word；
 - 用 `vTaskDelay` 做周期任务，导致累积漂移；
-- 在 ISR 里打印或调用 `snprintf`。
+- 在 ISR 里打印或调用 `snprintf`；
+- 为了“平台无关”再包一层 `port::`，结果两套语义都要维护。

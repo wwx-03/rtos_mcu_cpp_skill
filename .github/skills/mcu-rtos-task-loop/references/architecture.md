@@ -8,10 +8,11 @@
 ```text
 app → bsp → devices → utility
  │      │
- └──────┴──→ port → RTOS / SDK
+ └──────┴──→ RTOS / SDK
 ```
 
-> `devices` 不应依赖 `port`/RTOS；`port` 由 `app` 和 `bsp` 使用。
+> 没有 `port/` 层：`app` 和 `bsp` 直接调用所选用 RTOS 的原生 API；
+> `devices`、`services`、`utility` 不依赖 RTOS。芯片厂商 SDK 只出现在 `bsp`。
 
 - `app` 直接使用 `bsp` 暴露的设备/服务类；`devices` 是 `bsp` 的实现细节。
 - 优点：文件少、间接层少、bring-up 快、Flash/RAM 占用通常更小。
@@ -129,16 +130,16 @@ IMPLEMENT_BOARD_CLASS(Esp32SmartLockV01Board);
 Layered：
 
 ```cmake
-idf_component_register(... REQUIRES bsp port)                    # app
-idf_component_register(... REQUIRES port PRIV_REQUIRES devices)  # bsp
+idf_component_register(... REQUIRES bsp freertos)                    # app
+idf_component_register(... REQUIRES freertos PRIV_REQUIRES devices)  # bsp
 ```
 
 DIP：
 
 ```cmake
-idf_component_register(... REQUIRES devices services port)          # app
-idf_component_register(... REQUIRES devices services port)          # bsp
-idf_component_register(... REQUIRES app bsp devices services port)  # main
+idf_component_register(... REQUIRES devices services freertos)  # app
+idf_component_register(... REQUIRES devices services freertos)  # bsp
+idf_component_register(... REQUIRES app bsp devices services)   # main
 ```
 
 Hybrid：
@@ -160,9 +161,10 @@ Hybrid：
 - `devices/`：器件抽象与纯算法；不 include RTOS 与厂商头；不创建任务/队列。
 - `services/`：平台能力接口；不 include RTOS 与厂商头；不写寄存器。
 - `utility/`：滤波、格式化、数据结构等纯逻辑。
-- `port/`：任务、队列、信号量、临界区、时间、调度器启动的薄封装。
-- `app/`、`bsp/` 可以使用 RTOS API，但**平台差异只允许出现在 `port/`**；
-  `#ifdef ESP_PLATFORM`、`#ifdef STM32...` 不应散落在 APP 代码里。
+- `app/`、`bsp/` 直接调用所选用 RTOS 的原生 API（`xTaskCreate`、`xQueueCreate`、
+  `xTimerCreate` 等），**不再额外封装 `port/` 转接层**；平台差异（栈单位、ISR API、
+  临界区语义）写进平台契约。`#ifdef ESP_PLATFORM`、`#ifdef STM32...` 不应散落在
+  APP 代码里。
 
 `Board` 形态：
 
@@ -183,6 +185,7 @@ APP 的依赖全部从构造函数注入，APP 内部不写 `Board::GetInstance(
 | Board.hpp 暴露具体 bsp 类型，app 直接依赖驱动 | 暴露 devices/services 接口或 BoardServices |
 | bsp include app（反向依赖） | app → bsp 或 app → devices ← bsp |
 | devices include RTOS/厂商头 | devices 保持纯抽象，BSP 做适配 |
+| 给 FreeRTOS/CMSIS-RTOS2 再包一层 `port::` 转接 | 直接用原生 API，平台差异写进平台契约 |
 | 为每个 GPIO 都造接口 | 复杂/易变模块才抽象，简单器件可具体类 |
 | 只在文档里写模式，没有用构建系统强制 | 用组件/模块依赖做编译期约束 |
 | 抽象 `Board` 上出现板级专用方法（喂狗、板号、自检） | 留在具体板或抽成服务接口 |

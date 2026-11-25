@@ -5,9 +5,13 @@
 #include <stdint.h>
 
 #include "devices/display_panel.hpp"
-#include "port/rtos_port.hpp"
 
-// 静态版：外部 API 只投递事件，真正的绘制在 Display 任务里执行。
+// 原生 FreeRTOS 工程把 freertos/xxx.h 换成 FreeRTOS.h / queue.h / task.h。
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+
+// 外部 API 只投递事件，真正的绘制在 Display 任务里执行。
 //
 // DrawXxx() -> PostXxx() -> 内部队列 -> TaskLoop -> Handle(event) -> HandleXxx() -> panel
 class Display {
@@ -16,7 +20,7 @@ public:
 
 	static constexpr uint32_t kTaskStackBytes = 3072;
 	static constexpr uint32_t kQueueLength = 8;
-	static constexpr uint8_t kPriority = 1;
+	static constexpr UBaseType_t kPriority = 1;
 	static constexpr size_t kTextCapacity = 32;
 
 	bool Init();
@@ -55,7 +59,7 @@ private:
 	bool Post(const Message &message);
 
 	DisplayPanel *panel_;
-	port::StaticQueue<Message, kQueueLength> queue_;
-	port::StaticTask<kTaskStackBytes> task_;
+	QueueHandle_t queue_ = nullptr;
+	TaskHandle_t task_ = nullptr;
 	std::atomic<uint32_t> dropped_{0};
 };

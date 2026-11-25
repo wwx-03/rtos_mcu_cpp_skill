@@ -17,12 +17,13 @@
 - [ ] DIP/Hybrid：`devices` 接口析构为 `protected` 非虚，没有 `delete` 基类
 - [ ] Hybrid：实现层没有公共头文件，或公共头只包含接口类型
 - [ ] Hybrid：`references/module-matrix.md` 已填写模块路径与例外
-- [ ] `port` 覆盖 timer / 栈高水位 / heap 诊断；静态分配策略已记录
+- [ ] 没有 `port/` 封装层；`app`/`bsp` 直接调用所选 RTOS 的原生 API
+- [ ] RTOS 堆上限已配置（`configTOTAL_HEAP_SIZE` / ESP-IDF 系统堆），非堆 RAM 已列清单
+- [ ] 启动一次性分配清单（任务/队列/定时器/信号量）已记录，未超出堆上限
 - [ ] MCU、核数、RTOS、SDK 版本已确认
 - [ ] 入口函数与调度器启动模型已确认
 - [ ] 任务创建 API 栈单位已确认（byte / word）
 - [ ] 栈高水位单位已确认
-- [ ] 静态/动态分配支持已确认
 - [ ] ISR API 与中断优先级约束已确认
 - [ ] 临界区是否跨核已确认
 - [ ] 定时器/厂商事件回调上下文已确认
@@ -74,7 +75,8 @@
 - [ ] `std::function`/`std::string`/STL 的分配风险已评估，策略与平台契约一致
 - [ ] 每个并发域的任务预算（栈/优先级/周期/阻塞点）已记录
 - [ ] 分配与 STL 策略按 `references/memory-and-stl.md` 核对
-- [ ] 静态创建的 task/queue buffer 生命周期覆盖任务/队列，未放在任务栈上
+- [ ] 所有任务/队列/定时器在启动时一次创建完成，运行期无 create/delete/free
+- [ ] 启动后 `xPortGetMinimumEverFreeHeapSize` / `heap_caps_get_minimum_free_size` 稳定
 - [ ] 失败降级、时间基、连接 owner 按 `references/runtime-policies.md` 核对
 
 ## 5. 数据与状态
@@ -105,7 +107,7 @@
 - [ ] `idf.py build` / Keil / EIDE 构建通过
 - [ ] `size` 显示 app 分区余量充足
 - [ ] 没有重复中断向量/符号
-- [ ] 静态工程没有引入 malloc/free
+- [ ] 启动后堆水位稳定（无运行期分配）
 - [ ] `sdkconfig`、密钥、token 未入库
 - [ ] `managed_components/`、`build/` 未入库
 - [ ] 文档记录引脚、分压、标定、云端配置

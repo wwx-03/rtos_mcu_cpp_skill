@@ -9,16 +9,20 @@ bool Display::Init() {
 	if (queue_ != nullptr) {
 		return false;
 	}
-	return port::CreateQueue(kQueueLength, sizeof(Message), &queue_);
+	queue_ = xQueueCreate(kQueueLength, sizeof(Message));
+	return queue_ != nullptr;
 }
 
 bool Display::Start() {
 	if (queue_ == nullptr || task_ != nullptr) {
 		return false;
 	}
-	const port::TaskOptions options{"display", kTaskStackBytes, this,
-		static_cast<int>(kPriority)};
-	return port::CreateTask(&Display::TaskEntry, options, &task_);
+	if (xTaskCreate(&Display::TaskEntry, "display", kTaskStackBytes, this,
+			kPriority, &task_) != pdPASS) {
+		task_ = nullptr;
+		return false;
+	}
+	return true;
 }
 
 bool Display::DrawText(int x, int y, const char *text) {
@@ -59,7 +63,7 @@ void Display::TaskEntry(void *ctx) {
 void Display::TaskLoop() {
 	for (;;) {
 		Message message = {};
-		if (port::QueueReceive(queue_, &message, port::kWaitForever)) {
+		if (xQueueReceive(queue_, &message, portMAX_DELAY) == pdPASS) {
 			Handle(message);
 		}
 	}
@@ -96,7 +100,7 @@ void Display::HandleClear() {
 }
 
 bool Display::Post(const Message &message) {
-	if (!port::QueueSend(queue_, &message, port::kNoWait)) {
+	if (xQueueSend(queue_, &message, 0) != pdPASS) {
 		dropped_.fetch_add(1, std::memory_order_relaxed);
 		return false;
 	}

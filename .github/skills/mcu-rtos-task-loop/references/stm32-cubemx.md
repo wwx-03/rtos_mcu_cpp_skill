@@ -69,55 +69,45 @@ int main(void) {
 xTaskCreate(entry, "task", 512, arg, priority, &handle);  // 512 words ≈ 2KB
 ```
 
-`port::TaskOptions.stack_bytes` 统一用字节，STM32 port 实现里换算：
+`uxTaskGetStackHighWaterMark()` 在原生 FreeRTOS 返回 word。任务预算表可以直接按 word
+记录（`kTaskStackWords`）；如果预算按字节估算，用一个纯函数换算，不要为此封装任务 API：
 
 ```cpp
-xTaskCreate(entry, name, stack_bytes / sizeof(StackType_t), arg, priority, &handle);
-```
-
-`uxTaskGetStackHighWaterMark()` 在原生 FreeRTOS 返回 word；`port::GetStackHighWaterMark`
-会换算成字节，和 ESP-IDF 的语义保持一致。
-
-`templates/stm32/port/rtos_port.cpp` 还提供 `CreateTimer/Start/Stop/Reset/DeleteTimer`
-以及堆诊断。timer 回调运行在 timer task，只能投递。
-静态 task/queue 用 `port::StaticTask` / `port::StaticQueue`（见 `templates/port/rtos_port.hpp`），
-完整静态/动态示例见 `templates/app/`。
-
-## 4. 静态分配
-
-小 RAM 平台建议：
-
-```c
-#define configSUPPORT_STATIC_ALLOCATION   1
-#define configSUPPORT_DYNAMIC_ALLOCATION  0
-```
-
-> `templates/stm32/port/rtos_port.cpp` 同时提供动态 task/queue/timer 和静态
-> task/queue/timer（`port::StaticTask` / `StaticQueue` / `StaticTimer`）。
-> 设置 `configSUPPORT_DYNAMIC_ALLOCATION = 0` 后，动态 `CreateTask` / `CreateQueue` /
-> `CreateTimer` / `CreateBinarySemaphore` / `CreateMutex` 需要按 SDK 裁剪或替换；
-> 静态信号量仍需 `xSemaphoreCreateStatic`。
-> 静态任务模板见 `templates/app/`。
-
-此时必须提供空闲任务/定时器任务内存：
-
-```c
-static StaticTask_t idle_tcb;
-static StackType_t idle_stack[configMINIMAL_STACK_SIZE];
-
-void vApplicationGetIdleTaskMemory(StaticTask_t **tcb, StackType_t **stack, uint32_t *size) {
-	*tcb = &idle_tcb;
-	*stack = idle_stack;
-	*size = configMINIMAL_STACK_SIZE;
+constexpr UBaseType_t ToStackWords(uint32_t bytes) {
+	return static_cast<UBaseType_t>(
+		(bytes + sizeof(StackType_t) - 1) / sizeof(StackType_t));
 }
+```
 
-static StaticTask_t timer_tcb;
-static StackType_t timer_stack[configTIMER_TASK_STACK_DEPTH];
+队列、任务、定时器直接在 `Init()`/`Start()` 里用原生 API 创建；
+定时器用 `pvTimerGetTimerID()` 携带 `this`，不需要 trampoline。
 
-void vApplicationGetTimerTaskMemory(StaticTask_t **tcb, StackType_t **stack, uint32_t *size) {
-	*tcb = &timer_tcb;
-	*stack = timer_stack;
-	*size = configTIMER_TASK_STACK_DEPTH;
+## 4. 堆上限：启动时一次性分配
+
+小 RAM 平台不再逐对象静态创建，统一策略：
+
+1. 先把不用 RTOS 堆的 RAM 布置完：全局/静态对象、显示 framebuffer、DMA 缓冲、
+   协议栈静态缓冲、主栈；
+2. 把剩余 RAM 配成 `configTOTAL_HEAP_SIZE`（heap_4 单块；RAM 不连续用 heap_5，
+   启动时先 `vPortDefineHeapRegions()`）；
+3. 启动时一次性创建所有任务/队列/定时器/信号量，运行期不 create/delete/free；
+4. 用 `xPortGetFreeHeapSize()` / `xPortGetMinimumEverFreeHeapSize()` 验收水位。
+
+```c
+// FreeRTOSConfig.h
+#define configSUPPORT_DYNAMIC_ALLOCATION  1
+#define configSUPPORT_STATIC_ALLOCATION   0
+#define configTOTAL_HEAP_SIZE   ((size_t)(100 * 1024))   // 剩余 RAM - 保留
+#define configUSE_MALLOC_FAILED_HOOK       1
+#define configCHECK_FOR_STACK_OVERFLOW     2
+```
+
+```c
+// 启动阶段分配失败 = 预算算错，停下来并记录
+void vApplicationMallocFailedHook(void) {
+	taskDISABLE_INTERRUPTS();
+	for (;;) {
+	}
 }
 
 void vApplicationStackOverflowHook(TaskHandle_t task, char *name) {
@@ -129,6 +119,11 @@ void vApplicationStackOverflowHook(TaskHandle_t task, char *name) {
 }
 ```
 
+- 动态分配时**不需要** `vApplicationGetIdleTaskMemory` / `vApplicationGetTimerTaskMemory`；
+  idle 与 timer 任务的栈也从同一个堆里分配，要计入预算。
+- 堆太大直接链接失败（`ucHeap` 在 `.bss`），比运行期才发现更容易定位；
+- CCM/DTCM 等区域不能给 DMA，用 heap_5 单独划分前先查芯片手册。
+
 ## 5. FreeRTOSConfig.h 关键项
 
 | 配置 | 建议值 | 原因 |
@@ -138,10 +133,11 @@ void vApplicationStackOverflowHook(TaskHandle_t task, char *name) {
 | `configTICK_RATE_HZ` | `1000` | 1 ms 分辨率；需 `configUSE_16_BIT_TICKS = 0` |
 | `configMAX_PRIORITIES` | `7` | 够用 |
 | `configMINIMAL_STACK_SIZE` | `128` | 空闲任务栈（word） |
-| `configSUPPORT_STATIC_ALLOCATION` | 小 RAM：`1` | 静态创建 |
-| `configSUPPORT_DYNAMIC_ALLOCATION` | 小 RAM：`0` | 与策略一致 |
+| `configSUPPORT_DYNAMIC_ALLOCATION` | `1` | 启动一次性分配（堆上限） |
+| `configSUPPORT_STATIC_ALLOCATION` | `0` | 不做逐对象静态创建 |
+| `configTOTAL_HEAP_SIZE` | 剩余 RAM - 保留 | 任务栈 + 队列 + 定时器 + 信号量 + idle/timer 任务 |
 | `configCHECK_FOR_STACK_OVERFLOW` | `2` | 调试期必开 |
-| `configUSE_MALLOC_FAILED_HOOK` | 动态分配时 `1` | 堆失败要能停下来 |
+| `configUSE_MALLOC_FAILED_HOOK` | `1` | 启动分配失败要能停下来 |
 | `INCLUDE_vTaskDelayUntil` | `1` | 周期任务 |
 | `INCLUDE_uxTaskGetStackHighWaterMark` | `1` | 定栈大小 |
 
@@ -158,8 +154,8 @@ extern "C" void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 }
 ```
 
-驱动内部再调用 `port::QueueSendFromIsr` / `port::SemaphoreGiveFromIsr`，
-最后 `port::YieldFromIsr(woken)`。ISR 里不解析协议、不打印、不阻塞。
+驱动内部再调用 `xQueueSendFromISR` / `xSemaphoreGiveFromISR`，
+最后 `portYIELD_FROM_ISR(woken)`。ISR 里不解析协议、不打印、不阻塞。
 
 ## 7. EIDE / Keil（AC6）
 
@@ -177,7 +173,8 @@ files:
   - path: ../Middlewares/Third_Party/FreeRTOS/Source/event_groups.c
   - path: ../Middlewares/Third_Party/FreeRTOS/Source/stream_buffer.c
   - path: ../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F/port.c  # AC6
-  # 静态分配时不要加 heap_4.c
+  - path: ../Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/heap_4.c       # 滚动分配
+  # 只保留一个 heap_*.c：heap_1 不支持 free，heap_2 已废弃，heap_5 用于多块 RAM
 ```
 
 include 路径：
@@ -206,7 +203,7 @@ arm-none-eabi-nm build/<target>/<name>.elf | Select-String "SysTick_Handler|Pend
 ```
 
 - 每个向量只能有一份定义；
-- 静态分配工程里没有引入 `malloc`/`free`；
+- 启动后 `xPortGetMinimumEverFreeHeapSize` 稳定，没有运行期分配；
 - 启动日志显示任务创建成功、无栈溢出；
 - `uxTaskGetStackHighWaterMark` 检查栈余量；
 - 条件编译分支分别构建通过。

@@ -5,13 +5,18 @@
 #include <stdint.h>
 
 #include "display.hpp"
-#include "port/rtos_port.hpp"
+
+// 原生 FreeRTOS 工程把 freertos/xxx.h 换成 FreeRTOS.h / queue.h / task.h / timers.h。
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+#include "freertos/timers.h"
 
 class Board;
 
-// 静态版：队列/任务/定时器存储都在对象内，不依赖 heap。
-// GetInstance() 的函数内 static 已保证对象在静态存储区；
-// 不要把 Application 放到任务栈上或按值传递。
+// 队列/定时器在 Init() 创建，任务在 Start() 创建；
+// 全部从 RTOS 堆一次性分配，运行期不 create/delete/free。
+// GetInstance() 的函数内 static 已保证对象在静态存储区，不要按值传递。
 class Application {
 public:
 	static Application &GetInstance() {
@@ -52,10 +57,10 @@ private:
 	static constexpr uint32_t kTaskStackBytes = 4096;
 	static constexpr uint32_t kQueueLength = 16;
 	static constexpr uint32_t kTimerPeriodMs = 1000;
-	static constexpr uint8_t kPriority = 4;
+	static constexpr UBaseType_t kPriority = 4;
 	static constexpr size_t kMaxDeviceChunk = 64;
 
-	static void TimerEntry(void *ctx);
+	static void TimerEntry(TimerHandle_t timer);
 	static void TaskEntry(void *ctx);
 
 	void MainEventLoop();
@@ -68,14 +73,14 @@ private:
 	bool PostStart();
 	bool PostTimerElapsed();
 	bool PostDeviceReceived(size_t size);
-	// ISR 专用：调用后必须 YieldFromIsr(woken)。
-	bool PostDeviceReceivedFromIsr(size_t size, port::IsrWoken &woken);
+	// ISR 专用：调用方在 ISR 末尾 portYIELD_FROM_ISR(*woken)。
+	bool PostDeviceReceivedFromIsr(size_t size, BaseType_t *woken);
 
 	Board &board_;
 	Display display_;
-	port::StaticQueue<Event, kQueueLength> queue_;
-	port::StaticTask<kTaskStackBytes> task_;
-	port::StaticTimer timer_;
+	QueueHandle_t queue_ = nullptr;
+	TaskHandle_t task_ = nullptr;
+	TimerHandle_t timer_ = nullptr;
 	uint32_t uptime_seconds_ = 0;
 	std::atomic<uint32_t> dropped_{0};
 };

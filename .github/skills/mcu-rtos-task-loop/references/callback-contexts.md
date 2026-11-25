@@ -21,9 +21,9 @@
 ```cpp
 void SensorReadyIsr(void *arg) {      // 按平台加 ISR 修饰符/链接属性
 	auto *self = static_cast<Sensor *>(arg);
-	bool woken = false;
-	port::SemaphoreGiveFromIsr(self->ready_sem_, &woken);
-	port::YieldFromIsr(woken);
+	BaseType_t woken = pdFALSE;
+	xSemaphoreGiveFromISR(self->ready_sem_, &woken);
+	portYIELD_FROM_ISR(woken);
 }
 ```
 
@@ -31,8 +31,8 @@ void SensorReadyIsr(void *arg) {      // 按平台加 ISR 修饰符/链接属性
 
 - 清中断标志；
 - 从寄存器/FIFO 搬少量数据；
-- `port::QueueSendFromIsr` / `port::SemaphoreGiveFromIsr` / `port::TaskNotifyGiveFromIsr`；
-- 处理 woken 并 yield。
+- `xQueueSendFromISR` / `xSemaphoreGiveFromISR` / `vTaskNotifyGiveFromISR`；
+- 处理 woken 并 `portYIELD_FROM_ISR(woken)`。
 
 禁止：
 
@@ -85,7 +85,7 @@ static void WifiEventHandler(void *arg, esp_event_base_t base, int32_t id, void 
 - 运行在 timer task；
 - 不能阻塞、不能等队列、不能写 Flash；
 - 只投递事件；
-- 回调里不 stop/delete 自身；需要停止时投递到任务，由任务调用 `StopTimer`/`DeleteTimer`。
+- 回调里不 stop/delete 自身；需要停止时投递到任务，由任务调用 `xTimerStop`/`xTimerDelete`。
 
 ### esp_timer
 
@@ -119,9 +119,9 @@ extern "C" void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 
 ```cpp
 void Serial::HandleRxCpltEvent() {
-	bool woken = false;
-	port::QueueSendFromIsr(rx_queue_, &byte_, &woken);
-	port::YieldFromIsr(woken);
+	BaseType_t woken = pdFALSE;
+	xQueueSendFromISR(rx_queue_, &byte_, &woken);
+	portYIELD_FROM_ISR(woken);
 }
 ```
 
@@ -155,7 +155,7 @@ device.NotifyReceived(size);
 ## 7. 资源生命周期规则
 
 1. 资源只在 `Init()` 创建，任务只在 `Start()` 创建；
-2. 运行期不 create/delete；
+2. 所有 RTOS 对象在启动时一次性创建，运行期不 create/delete/free；
 3. 回调只“通知”，不“销毁”；
 4. 需要销毁时投递到拥有该资源的任务；
 5. 销毁前先停止生产者（ISR/定时器/协议栈回调）；
